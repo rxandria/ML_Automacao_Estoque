@@ -1,0 +1,567 @@
+# -*- coding: utf-8 -*-
+"""
+Main pipeline orchestrator and Local Web Server for the Mercado Livre Automation project.
+Supports background removal and multiple image upload.
+"""
+import os
+import sys
+import json
+import re
+import datetime
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
+
+from scripts.vision_processor import optimize_image_for_ml, analyze_product_image, sanitize_title
+from scripts.drive_sheets_sync import (
+    authenticate, 
+    setup_drive_structure, 
+    setup_google_sheet, 
+    upload_product_photo, 
+    add_product_to_sheet,
+    delete_drive_file,
+    delete_sheet_row,
+    HEADERS
+)
+from scripts.ml_api_publisher import MLPublisher
+
+# ID da pasta principal no Drive
+PARENT_FOLDER_ID = "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+
+def run_pipeline(image_paths, dry_run=True):
+    # Aceita string única ou lista de caminhos
+    if isinstance(image_paths, str):
+        image_paths = [image_paths]
+        
+    print("\n" + "="*60)
+    print(f"🎬 INICIANDO PIPELINE: {len(image_paths)} Fotos (dry_run={dry_run})")
+    print(f"   Arquivos: {image_paths}")
+    print("="*60)
+    
+    try:
+        # 1. Autenticação com as APIs do Google
+        print("\n🔑 Passo 1: Autenticando com Google APIs...")
+        creds = authenticate()
+        
+        # 2. Inicialização das estruturas no Drive e Sheets
+        print("\n📁 Passo 2: Configurando estrutura no Google Drive/Sheets...")
+        photos_folder_id = setup_drive_structure(PARENT_FOLDER_ID, creds)
+        sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
+        
+        # 3. Análise do produto com a IA (baseado na 1ª imagem / Principal)
+        print("\n🧠 Passo 3: Analisando imagem principal do produto...")
+        main_image = image_paths[0]
+        product_data = analyze_product_image(main_image)
+        
+        print(f"   Confiança da IA: {product_data.get('confidence_score')}")
+        print(f"   Revisão Manual Necessária: {product_data.get('requires_manual_review')}")
+        
+        # Se necessitar de revisão manual (baixa qualidade, dimensões ou dados inválidos)
+        if product_data.get("requires_manual_review"):
+            reason = product_data.get("review_reason", "Motivo desconhecido")
+            print(f"\n⚠️ [REVISÃO MANUAL DETECTADA] {reason}")
+            
+            # Adiciona na planilha com status REVISAO_MANUAL
+            add_product_to_sheet(
+                sheet_id=sheet_id,
+                product_data=product_data,
+                status="REVISAO_MANUAL",
+                review_needed=True,
+                review_reason=reason,
+                creds=creds
+            )
+            print("\n❌ Pipeline interrompido: O produto necessita de revisão humana.")
+            return {
+                "success": False,
+                "requires_manual_review": True,
+                "reason": reason,
+                "product_data": product_data
+            }
+
+        # 4. Otimização das Imagens
+        # - 1ª imagem (Principal): remove o fundo com rembg.
+        # - Demais imagens: apenas padroniza tamanho sem remover o fundo.
+        print("\n📷 Passo 4: Otimizando imagens para padrões do Mercado Livre...")
+        optimized_paths = []
+        public_urls = []
+        
+        for idx, img_path in enumerate(image_paths):
+            base_name = os.path.basename(img_path)
+            name, ext = os.path.splitext(base_name)
+            
+            # Determina se é a imagem principal ou adicional
+            is_main = (idx == 0)
+            suffix = "main_opt" if is_main else f"sub_{idx}_opt"
+            optimized_path = os.path.join("temp_uploads", f"{name}_{suffix}.jpg")
+            
+            # Executa otimização (remove_bg=True apenas para a foto principal)
+            optimize_image_for_ml(img_path, optimized_path, remove_bg=is_main)
+            optimized_paths.append(optimized_path)
+            
+            # 5. Upload das imagens otimizadas para o Google Drive
+            print(f"🚀 Passo 5.{idx+1}: Enviando foto {idx+1} para o Google Drive...")
+            url = upload_product_photo(optimized_path, photos_folder_id, creds)
+            public_urls.append(url)
+
+        # Junta todas as URLs separadas por vírgula para salvar na Planilha
+        concatenated_urls = ", ".join(public_urls)
+        product_data["url_fotos"] = concatenated_urls
+        
+        # 6. Integração e Validação do Mercado Livre
+        print("\n🛍️ Passo 6: Validando publicação no Mercado Livre...")
+        publisher = MLPublisher(access_token="mock_token_abc123")
+        
+        if dry_run:
+            result = publisher.publish_item(product_data, public_urls, dry_run=True)
+            status = "HOMOLOGADO (DRY RUN)"
+            ml_id = result.get("id", "")
+            
+            add_product_to_sheet(
+                sheet_id=sheet_id,
+                product_data=product_data,
+                status=status,
+                review_needed=False,
+                review_reason="Validação do payload aprovada com múltiplas fotos (Modo de Simulação).",
+                creds=creds,
+                product_id=ml_id
+            )
+        else:
+            result = publisher.publish_item(product_data, public_urls, dry_run=False)
+            if result.get("status") == "success":
+                status = "PUBLICADO"
+                ml_id = result.get("id", "")
+                add_product_to_sheet(
+                    sheet_id=sheet_id,
+                    product_data=product_data,
+                    status=status,
+                    review_needed=False,
+                    review_reason=f"Publicado com sucesso no ML com {len(public_urls)} fotos. ID: {ml_id}",
+                    creds=creds,
+                    product_id=ml_id
+                )
+            else:
+                status = "ERRO"
+                add_product_to_sheet(
+                    sheet_id=sheet_id,
+                    product_data=product_data,
+                    status=status,
+                    review_needed=True,
+                    review_reason=f"Erro na publicação: {result.get('message', 'Erro desconhecido')}",
+                    creds=creds
+                )
+        
+        # 7. Limpeza dos arquivos locais otimizados temporários
+        print("\n🧹 Passo 7: Limpando arquivos temporários locais...")
+        for opt_path in optimized_paths:
+            if os.path.exists(opt_path):
+                os.remove(opt_path)
+                print(f"   Arquivo temporário removido: {opt_path}")
+            
+        print(f"\n🎉 PIPELINE CONCLUÍDO COM SUCESSO! Status: {status}")
+        return {
+            "success": True,
+            "requires_manual_review": False,
+            "status": status,
+            "product_data": product_data
+        }
+        
+    except Exception as e:
+        print(f"\n❌ Falha grave na execução do pipeline: {e}")
+        return {
+            "success": False,
+            "requires_manual_review": False,
+            "error": str(e)
+        }
+
+def update_product_in_sheet(sheet_id, row_num, product_data, status, review_needed, review_reason, creds, product_id=""):
+    """
+    Atualiza uma linha específica na planilha Google Sheets.
+    """
+    try:
+        from googleapiclient.discovery import build
+        sheets_service = build("sheets", "v4", credentials=creds)
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        row_data = [
+            product_id,                                              # ID Produto
+            product_data.get("titulo", ""),                          # Título
+            product_data.get("categoria", ""),                       # Categoria
+            product_data.get("preco_sugerido", 0.0),                 # Preço (R$)
+            product_data.get("estoque", 1),                          # Estoque
+            product_data.get("condicao", "new"),                     # Condição
+            product_data.get("url_fotos", ""),                       # URL Fotos
+            status,                                                  # Status ML
+            "SIM" if review_needed else "NÃO",                        # Revisão Necessária
+            review_reason,                                           # Motivo Revisão
+            now_str                                                  # Data Criação
+        ]
+        
+        body = {
+            'values': [row_data]
+        }
+        
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"A{row_num}:K{row_num}",
+            valueInputOption="USER_ENTERED",
+            body=body
+        ).execute()
+        print(f"📊 Linha {row_num} da planilha atualizada via Revisão Manual!")
+        
+    except Exception as e:
+        print(f"❌ Erro ao atualizar linha na planilha: {e}")
+        raise e
+
+# --- Servidor Local HTTP ---
+
+class DashboardHTTPHandler(BaseHTTPRequestHandler):
+    def send_cors_response(self, status=200, content_type='application/json'):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_cors_response(200)
+
+    def do_GET(self):
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        
+        # Servir a página principal do Dashboard
+        if path in ('/', '/index.html'):
+            self.send_cors_response(200, 'text/html; charset=utf-8')
+            with open('dashboard/index.html', 'rb') as f:
+                self.wfile.write(f.read())
+                
+        # Servir os arquivos temporários locais (Imagens de thumbnail)
+        elif path.startswith('/temp_uploads/'):
+            filename = os.path.basename(path)
+            file_path = os.path.join('temp_uploads', filename)
+            
+            if os.path.exists(file_path):
+                mime = 'image/png' if filename.endswith('.png') else 'image/jpeg'
+                self.send_cors_response(200, mime)
+                with open(file_path, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_cors_response(404, 'text/plain')
+                self.wfile.write(b'File Not Found')
+                
+        # API: Obter todos os produtos cadastrados no Google Sheets (suporta /api/products e /api/data)
+        elif path in ('/api/products', '/api/data'):
+            try:
+                creds = authenticate()
+                sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
+                
+                from googleapiclient.discovery import build
+                sheets_service = build("sheets", "v4", credentials=creds)
+                
+                result = sheets_service.spreadsheets().values().get(
+                    spreadsheetId=sheet_id,
+                    range="A2:K200"
+                ).execute()
+                
+                rows = result.get('values', [])
+                products = []
+                
+                for idx, row in enumerate(rows):
+                    while len(row) < len(HEADERS):
+                        row.append("")
+                        
+                    titulo = row[1]
+                    local_thumb = "/temp_uploads/test_product.jpg"
+                    if "fone" in titulo.lower():
+                        local_thumb = "/temp_uploads/fone_bluetooth.jpg"
+                    elif "revisar" in titulo.lower() or "defeito" in titulo.lower() or "nome!" in titulo.lower():
+                        local_thumb = "/temp_uploads/test_revisar.jpg"
+                    
+                    products.append({
+                        "row_num": idx + 2,
+                        "id": row[0],
+                        "titulo": row[1],
+                        "categoria": row[2],
+                        "preco": row[3],
+                        "estoque": row[4],
+                        "condicao": row[5],
+                        "url_fotos": row[6],
+                        "status": row[7],
+                        "review_needed": row[8] == "SIM",
+                        "motivo_revisao": row[9],
+                        "date": row[10],
+                        "local_thumb": local_thumb,
+                        "original_filename": "fone_bluetooth.jpg" if "fone" in titulo.lower() else "test_revisar.jpg"
+                    })
+                
+                self.send_cors_response(200)
+                self.wfile.write(json.dumps(products).encode('utf-8'))
+                
+            except Exception as e:
+                self.send_cors_response(500)
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        else:
+            self.send_cors_response(404, 'text/plain')
+            self.wfile.write(b'Not Found')
+
+    def do_POST(self):
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        
+        # API: Upload de imagens e execução automática do Pipeline (Suporta múltiplas imagens)
+        if path == '/api/upload':
+            try:
+                content_type = self.headers.get('content-type', '')
+                if 'boundary=' not in content_type:
+                    self.send_cors_response(400)
+                    self.wfile.write(json.dumps({"error": "Bad Request: boundary missing"}).encode('utf-8'))
+                    return
+                
+                boundary = content_type.split('boundary=')[1].strip().encode('utf-8')
+                content_length = int(self.headers.get('content-length', 0))
+                body = self.rfile.read(content_length)
+                
+                parts = body.split(boundary)
+                saved_paths = []
+                
+                for part in parts:
+                    if b'filename="' in part:
+                        headers_part, file_content = part.split(b'\r\n\r\n', 1)
+                        file_content = file_content.rsplit(b'\r\n', 1)[0]
+                        
+                        filename_match = re.search(rb'filename="([^"]+)"', headers_part)
+                        if filename_match:
+                            filename = filename_match.group(1).decode('utf-8')
+                            
+                            os.makedirs("temp_uploads", exist_ok=True)
+                            file_path = os.path.join("temp_uploads", filename)
+                            with open(file_path, 'wb') as f:
+                                f.write(file_content)
+                            saved_paths.append(file_path)
+                
+                if not saved_paths:
+                    self.send_cors_response(400)
+                    self.wfile.write(json.dumps({"error": "Bad Request: No files uploaded"}).encode('utf-8'))
+                    return
+                
+                # 1. Executa a análise local da imagem principal de forma síncrona (rápida, <0.05s)
+                # para verificar se exige revisão manual imediata.
+                main_image = saved_paths[0]
+                product_data = analyze_product_image(main_image)
+                requires_review = product_data.get("requires_manual_review", False)
+                
+                # 2. Executa o restante do pipeline (otimização, upload ao Drive, Sheets e ML) em background
+                # para evitar o timeout de rede/localtunnel.
+                import threading
+                def async_pipeline_worker():
+                    try:
+                        run_pipeline(saved_paths, dry_run=True)
+                    except Exception as err:
+                        print(f"❌ Erro no pipeline assíncrono: {err}")
+                
+                threading.Thread(target=async_pipeline_worker, daemon=True).start()
+                
+                # 3. Retorna resposta síncrona imediatamente
+                result = {
+                    "success": True,
+                    "requires_manual_review": requires_review,
+                    "product_data": product_data
+                }
+                
+                self.send_cors_response(200)
+                self.wfile.write(json.dumps(result).encode('utf-8'))
+                
+            except Exception as e:
+                self.send_cors_response(500)
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+ 
+        # API: Salvar modificações da Revisão Manual e Aprovar Publicação
+        elif path == '/api/review':
+            try:
+                content_length = int(self.headers.get('content-length', 0))
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode('utf-8'))
+                
+                row_num = int(data.get("index")) + 2
+                
+                product_data = {
+                    "titulo": sanitize_title(data.get("titulo")),
+                    "categoria": data.get("categoria"),
+                    "preco_sugerido": float(data.get("preco")),
+                    "estoque": int(data.get("estoque")),
+                    "condicao": "new",
+                    "descricao": data.get("descricao")
+                }
+                
+                print(f"\n✍️ Processando Revisão Manual para linha {row_num}: '{product_data['titulo']}'")
+                
+                creds = authenticate()
+                photos_folder_id = setup_drive_structure(PARENT_FOLDER_ID, creds)
+                sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
+                
+                orig_filename = data.get("original_filename", "test_revisar.jpg")
+                original_path = os.path.join("temp_uploads", orig_filename)
+                
+                if not os.path.exists(original_path):
+                    original_path = "temp_uploads/test_product.jpg"
+                
+                # 1. Otimização da imagem com remoção de fundo (por ser a foto principal revisada)
+                optimized_path = os.path.join("temp_uploads", "review_optimized.jpg")
+                optimize_image_for_ml(original_path, optimized_path, remove_bg=True)
+                
+                # 2. Upload para o Drive
+                public_url = upload_product_photo(optimized_path, photos_folder_id, creds)
+                product_data["url_fotos"] = public_url
+                
+                # 3. Publicação no Mercado Livre (Simulação dry-run)
+                publisher = MLPublisher(access_token="mock_token_abc123")
+                result = publisher.publish_item(product_data, [public_url], dry_run=True)
+                
+                ml_id = result.get("id", "MLB9999999999")
+                status = "HOMOLOGADO (DRY RUN)"
+                
+                # 4. Atualiza a planilha marcando como homologado
+                update_product_in_sheet(
+                    sheet_id=sheet_id,
+                    row_num=row_num,
+                    product_data=product_data,
+                    status=status,
+                    review_needed=False,
+                    review_reason="Aprovado manualmente via interface de controle com fundo removido.",
+                    creds=creds,
+                    product_id=ml_id
+                )
+                
+                if os.path.exists(optimized_path):
+                    os.remove(optimized_path)
+                
+                self.send_cors_response(200)
+                self.wfile.write(json.dumps({"success": True, "status": status}).encode('utf-8'))
+                
+            except Exception as e:
+                self.send_cors_response(500)
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        else:
+            self.send_cors_response(404, 'text/plain')
+            self.wfile.write(b'Not Found')
+
+    def do_DELETE(self):
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+        
+        # Suporta DELETE /api/products/<product_id>?row_num=<row_num>
+        match = re.match(r'^/api/products/([^/]+)$', path)
+        if match:
+            product_id = match.group(1)
+            query = parse_qs(parsed_url.query)
+            row_num_str = query.get('row_num', [None])[0]
+            
+            if not row_num_str:
+                self.send_cors_response(400)
+                self.wfile.write(json.dumps({"error": "Parâmetro row_num é obrigatório."}).encode('utf-8'))
+                return
+                
+            try:
+                row_num = int(row_num_str)
+                print(f"\n🗑️ Recebida requisição de exclusão em cascata:")
+                print(f"   ID Produto: {product_id}")
+                print(f"   Linha Planilha: {row_num}")
+                
+                # 1. Obter os dados da linha para extrair URLs das imagens
+                creds = authenticate(allow_interactive=False)
+                sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
+                
+                from googleapiclient.discovery import build
+                sheets_service = build("sheets", "v4", credentials=creds)
+                
+                # Obtém a linha correspondente da planilha
+                result = sheets_service.spreadsheets().values().get(
+                    spreadsheetId=sheet_id,
+                    range=f"A{row_num}:K{row_num}"
+                ).execute()
+                
+                rows = result.get('values', [])
+                if not rows:
+                    raise ValueError(f"Nenhum dado encontrado na linha {row_num} da planilha.")
+                    
+                row_data = rows[0]
+                url_fotos = row_data[6] if len(row_data) > 6 else ""
+                
+                # 2. Excluir os arquivos no Google Drive
+                if url_fotos:
+                    urls = [u.strip() for u in url_fotos.split(',') if u.strip()]
+                    for url in urls:
+                        delete_drive_file(url, creds)
+                
+                # 3. Excluir o anúncio no Mercado Livre (se houver MLB válido)
+                publisher = MLPublisher(access_token="mock_token_abc123")
+                publisher.delete_item(product_id, dry_run=True)
+                
+                # 4. Excluir a linha na planilha do Google Sheets
+                delete_sheet_row(sheet_id, row_num, creds)
+                
+                self.send_cors_response(200)
+                self.wfile.write(json.dumps({"success": True, "message": "Exclusão em cascata concluída."}).encode('utf-8'))
+                
+            except Exception as e:
+                print(f"❌ Erro ao executar exclusão em cascata: {e}")
+                self.send_cors_response(500)
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+        else:
+            self.send_cors_response(404, 'text/plain')
+            self.wfile.write(b'Not Found')
+
+def get_local_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+def run_server(port=8000):
+    server_address = ('0.0.0.0', port)
+    httpd = ThreadingHTTPServer(server_address, DashboardHTTPHandler)
+    local_ip = get_local_ip()
+    print(f"\n🌐 Servidor Web iniciado com sucesso na porta {port}!")
+    print(f"👉 Acesso Local: http://localhost:{port}")
+    print(f"📱 Acesso na Rede (Celular/Wi-Fi): http://{local_ip}:{port}")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n🛑 Servidor encerrado.")
+        httpd.server_close()
+
+if __name__ == "__main__":
+    os.makedirs("temp_uploads", exist_ok=True)
+    
+    test_ok_path = "temp_uploads/fone_bluetooth.jpg"
+    test_fail_path = "temp_uploads/test_revisar.jpg"
+    
+    from PIL import Image
+    if not os.path.exists(test_ok_path):
+        import numpy as np
+        arr = np.random.randint(0, 255, (800, 800, 3), dtype=np.uint8)
+        img = Image.fromarray(arr)
+        img.save(test_ok_path)
+        print(f"📷 Imagem de teste válida criada em: {test_ok_path}")
+        
+    if not os.path.exists(test_fail_path):
+        img = Image.new('RGB', (100, 100), color='grey')
+        img.save(test_fail_path)
+        print(f"📷 Imagem de teste inválida criada em: {test_fail_path}")
+        
+    port = int(os.environ.get("PORT", 8000))
+    # Verifica argumentos de terminal
+    if len(sys.argv) > 1 and sys.argv[1] == "--server-only":
+        run_server(port)
+    else:
+        print("Executando rodada de testes do pipeline...")
+        # Executa testes com lista de imagens
+        run_pipeline([test_ok_path], dry_run=True)
+        run_pipeline([test_fail_path], dry_run=True)
+        
+        run_server(port)

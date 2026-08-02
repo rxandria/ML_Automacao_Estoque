@@ -1,0 +1,7 @@
+config/token.json
+config/credentials.json
+temp_uploads/*
+!temp_uploads/.gitkeep
+__pycache__/
+*.pyc
+.env
