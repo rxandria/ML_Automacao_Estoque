@@ -378,8 +378,20 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(f.read())
             return
 
+        # Servir Service Worker (público)
+        if path in ('/sw.js', '/dashboard/sw.js'):
+            self.send_cors_response(200, 'application/javascript; charset=utf-8')
+            sw_path = 'dashboard/sw.js' if os.path.exists('dashboard/sw.js') else 'sw.js'
+            if os.path.exists(sw_path):
+                with open(sw_path, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.wfile.write(b'// SW v2 Clean Cache\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => self.clients.claim())));')
+            return
+
         # Para APIs e arquivos estáticos restritos, verifica autenticação
         user = self.get_authenticated_user()
+
 
         # Servir os arquivos temporários locais (Imagens de thumbnail)
         if path.startswith('/temp_uploads/'):

@@ -1126,19 +1126,52 @@
     <div class="toast-container" id="toast-wrapper"></div>
 
     <script>
+        // 1. Atualização e Limpeza de Service Workers antigos se detectados
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(registrations => {
+                for (let registration of registrations) {
+                    if (!registration.active || !registration.active.scriptURL.includes('v2')) {
+                        registration.unregister().then(unregistered => {
+                            if (unregistered) {
+                                console.log('🧹 Service Worker antigo desinstalado com sucesso.');
+                                if (window.caches) {
+                                    caches.keys().then(names => {
+                                        for (let name of names) caches.delete(name);
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+            }).catch(err => console.warn('Aviso ao verificar Service Workers:', err));
+
+            // Registra novo SW v2 de forma limpa
+            navigator.serviceWorker.register('/sw.js').catch(err => {
+                console.log('SW Registration skipped/failed:', err);
+            });
+        }
+
         let isRedirectingToLogin = false;
 
         function showAuthErrorAndRedirect(message = 'Sessão expirada. Por favor, faça login novamente.') {
             if (isRedirectingToLogin) return;
             isRedirectingToLogin = true;
-            localStorage.removeItem('session_token');
-            localStorage.removeItem('user_info');
+
+            // Sanitização obrigatória de armazenamento para prevenir loops de tokens velhos/inválidos
+            try {
+                localStorage.clear();
+                sessionStorage.clear();
+            } catch (e) {
+                console.error('Erro ao limpar storage local:', e);
+            }
+
             if (typeof showToast === 'function') {
                 showToast(message, 'warning');
             }
+
             setTimeout(() => {
                 window.location.href = '/login.html';
-            }, 2000);
+            }, 1200);
         }
 
         // Validação de autenticação inicial
@@ -1173,6 +1206,7 @@
                 throw error;
             }
         };
+
 
 
         // DOM Elements

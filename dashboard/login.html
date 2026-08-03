@@ -325,6 +325,20 @@
             }
         });
 
+        // Limpeza de Service Workers obsoletos no login
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(registrations => {
+                for (let registration of registrations) {
+                    if (!registration.active || !registration.active.scriptURL.includes('v2')) {
+                        registration.unregister().then(() => {
+                            if (window.caches) caches.keys().then(names => names.forEach(n => caches.delete(n)));
+                        });
+                    }
+                }
+            });
+            navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW login registration skipped:', err));
+        }
+
         // Se houver token salvo, valida com a API antes de redirecionar para evitar loops
         const token = localStorage.getItem('session_token');
         if (token) {
@@ -334,13 +348,14 @@
                 if (res.ok) {
                     window.location.href = '/index.html';
                 } else {
-                    localStorage.removeItem('session_token');
-                    localStorage.removeItem('user_info');
+                    localStorage.clear();
+                    sessionStorage.clear();
                 }
             }).catch(() => {
                 // Em caso de falha de conexão, permanece na tela de login
             });
         }
+
 
     </script>
 </body>
