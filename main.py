@@ -8,7 +8,27 @@ import sys
 import json
 import re
 import datetime
+from datetime import timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")
+except Exception:
+    BRASILIA_TZ = timezone(timedelta(hours=-3))
+
+def get_brasilia_time():
+    """
+    Retorna o objeto datetime atual no fuso horário oficial de Brasília (America/Sao_Paulo, UTC-3).
+    """
+    return datetime.datetime.now(timezone.utc).astimezone(BRASILIA_TZ)
+
+def format_brasilia_time(fmt="%d/%m/%Y %H:%M:%S"):
+    """
+    Retorna a data e hora atual formatada no fuso horário de Brasília (padrão DD/MM/YYYY HH:MM:SS).
+    """
+    return get_brasilia_time().strftime(fmt)
+
 import gc
+
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
@@ -253,7 +273,8 @@ def run_pipeline(image_paths, dry_run=True):
             "status": status,
             "review_needed": product_data.get("requires_manual_review", False),
             "motivo_revisao": product_data.get("review_reason", ""),
-            "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
+
             "local_thumb": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
             "original_filename": os.path.basename(main_image)
         }
@@ -298,7 +319,8 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
     try:
         from googleapiclient.discovery import build
         sheets_service = build("sheets", "v4", credentials=creds)
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = format_brasilia_time("%d/%m/%Y %H:%M:%S")
+
         
         row_data = [
             product_id,                                              # ID Produto
@@ -339,7 +361,8 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
 class DashboardHTTPHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Log otimizado e leve para evitar alocações desnecessárias em repouso
-        sys.stdout.write(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {format % args}\n")
+        sys.stdout.write(f"[{format_brasilia_time('%H:%M:%S')}] {format % args}\n")
+
 
     def get_authenticated_user(self):
         token = None
@@ -541,7 +564,8 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     SESSIONS[session_token] = {
                         "username": username,
                         "role": user_role,
-                        "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        "created_at": format_brasilia_time("%d/%m/%Y %H:%M:%S")
+
                     }
                     save_sessions(SESSIONS)
                     
@@ -776,7 +800,8 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         "status": status,
                         "review_needed": False,
                         "motivo_revisao": motivo,
-                        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
+
                         "local_thumb": "/temp_uploads/test_product.jpg"
                     })
 

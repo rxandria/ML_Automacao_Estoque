@@ -5,7 +5,27 @@ Google Drive & Sheets synchronization script.
 import os.path
 import mimetypes
 import datetime
+from datetime import timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")
+except Exception:
+    BRASILIA_TZ = timezone(timedelta(hours=-3))
+
+def get_brasilia_time():
+    """
+    Retorna o objeto datetime atual no fuso horário oficial de Brasília (America/Sao_Paulo, UTC-3).
+    """
+    return datetime.datetime.now(timezone.utc).astimezone(BRASILIA_TZ)
+
+def format_brasilia_time(fmt="%d/%m/%Y %H:%M:%S"):
+    """
+    Retorna a data e hora atual formatada no fuso horário de Brasília (padrão DD/MM/YYYY HH:MM:SS).
+    """
+    return get_brasilia_time().strftime(fmt)
+
 from google.auth.transport.requests import Request
+
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -259,7 +279,8 @@ def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_r
     try:
         sheets_service = build("sheets", "v4", credentials=creds)
         
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = format_brasilia_time("%d/%m/%Y %H:%M:%S")
+
         
         row_data = [
             product_id,                                              # ID Produto
