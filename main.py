@@ -711,92 +711,119 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 gc.collect()
 
 
-        # API: Salvar modificações da Revisão Manual e Aprovar Publicação
-        elif path == '/api/review':
+        # API: Salvar modificações da Revisão Manual e Aprovar Publicação (sem reprocessamento de imagem)
+        elif path in ('/api/review', '/api/products/update'):
             try:
                 content_length = int(self.headers.get('content-length', 0))
                 body = self.rfile.read(content_length)
                 data = json.loads(body.decode('utf-8'))
                 del body
                 
-                row_num = int(data.get("index")) + 2
+                idx = data.get("index")
+                row_num = int(data.get("row_num", idx + 2 if idx is not None else 2))
+                product_id = data.get("id", data.get("product_id", ""))
+                
+                titulo = sanitize_title(data.get("titulo", ""))
+                categoria = data.get("categoria", "Outros")
+                preco = float(data.get("preco", data.get("preco_sugerido", 0.0)))
+                estoque = int(data.get("estoque", 1))
+                descricao = data.get("descricao", "")
+                condicao = data.get("condicao", "new")
+                
+                status = "HOMOLOGADO"
+                motivo = "Aprovado manualmente via interface de controle."
+                
+                print(f"\n✍️ [REVISÃO MANUAL] Aprovação rápida para produto (linha {row_num}): '{titulo}'")
                 
                 product_data = {
-                    "titulo": sanitize_title(data.get("titulo")),
-                    "categoria": data.get("categoria"),
-                    "preco_sugerido": float(data.get("preco")),
-                    "estoque": int(data.get("estoque")),
-                    "condicao": "new",
-                    "descricao": data.get("descricao")
+                    "titulo": titulo,
+                    "categoria": categoria,
+                    "preco_sugerido": preco,
+                    "estoque": estoque,
+                    "condicao": condicao,
+                    "descricao": descricao
                 }
                 
-                print(f"\n✍️ Processando Revisão Manual para linha {row_num}: '{product_data['titulo']}'")
-                
-                creds = authenticate()
-                photos_folder_id = setup_drive_structure(PARENT_FOLDER_ID, creds)
-                sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
-                
-                orig_filename = data.get("original_filename", "test_revisar.jpg")
-                original_path = os.path.join("temp_uploads", orig_filename)
-                
-                if not os.path.exists(original_path):
-                    original_path = "temp_uploads/test_product.jpg"
-                
-                # 1. Otimização da imagem com remoção de fundo (import sob demanda)
-                from scripts.vision_processor import optimize_image_for_ml
-                optimized_path = os.path.join("temp_uploads", "review_optimized.jpg")
-                optimize_image_for_ml(original_path, optimized_path, remove_bg=True)
-                
-                # 2. Upload para o Drive
-                public_url = upload_product_photo(optimized_path, photos_folder_id, creds)
-                product_data["url_fotos"] = public_url
-                
-                # 3. Publicação no Mercado Livre (Simulação dry-run)
-                publisher = MLPublisher(access_token="mock_token_abc123")
-                result = publisher.publish_item(product_data, [public_url], dry_run=True)
-                
-                ml_id = result.get("id", "MLB9999999999")
-                status = "HOMOLOGADO (DRY RUN)"
-                
-                # 4. Atualiza a planilha marcando como homologado
-                update_product_in_sheet(
-                    sheet_id=sheet_id,
-                    row_num=row_num,
-                    product_data=product_data,
-                    status=status,
-                    review_needed=False,
-                    review_reason="Aprovado manualmente via interface de controle com fundo removido.",
-                    creds=creds,
-                    product_id=ml_id
-                )
-                
-                # Atualiza também no cache local de produtos
+                # 1. Atualização imediata no cache local de produtos (sem reprocessar imagem)
+                updated = False
                 for p in LOCAL_PRODUCTS:
-                    if p.get("row_num") == row_num or p.get("id") == ml_id or p.get("titulo") == product_data["titulo"]:
-                        p["titulo"] = product_data["titulo"]
-                        p["categoria"] = product_data["categoria"]
-                        p["preco"] = product_data["preco_sugerido"]
-                        p["estoque"] = product_data["estoque"]
+                    if (product_id and p.get("id") == product_id) or \
+                       p.get("row_num") == row_num or \
+                       (idx is not None and idx < len(LOCAL_PRODUCTS) and LOCAL_PRODUCTS[idx] == p) or \
+                       p.get("titulo") == titulo:
+                        p["titulo"] = titulo
+                        p["categoria"] = categoria
+                        p["preco"] = preco
+                        p["estoque"] = estoque
+                        p["descricao"] = descricao
                         p["status"] = status
                         p["review_needed"] = False
-                        p["motivo_revisao"] = "Aprovado manualmente via interface de controle com fundo removido."
-                        p["url_fotos"] = public_url
-                save_local_products(LOCAL_PRODUCTS)
+                        p["motivo_revisao"] = motivo
+                        updated = True
+                        break
                 
-                if os.path.exists(optimized_path):
-                    os.remove(optimized_path)
-                
-                gc.collect()
-                self.send_cors_response(200)
-                self.wfile.write(json.dumps({"success": True, "status": status}).encode('utf-8'))
+                if not updated:
+                    LOCAL_PRODUCTS.append({
+                        "row_num": row_num,
+                        "id": product_id or f"MLB{uuid.uuid4().hex[:10].upper()}",
+                        "titulo": titulo,
+                        "categoria": categoria,
+                        "preco": preco,
+                        "estoque": estoque,
+                        "descricao": descricao,
+                        "condicao": condicao,
+                        "url_fotos": data.get("url_fotos", "/temp_uploads/test_product.jpg"),
+                        "status": status,
+                        "review_needed": False,
+                        "motivo_revisao": motivo,
+                        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "local_thumb": "/temp_uploads/test_product.jpg"
+                    })
 
-                
+                save_local_products(LOCAL_PRODUCTS)
+                gc.collect()
+
+                # 2. Envia resposta HTTP 200 OK JSON IMEDIATA ao frontend (evita BrokenPipeError)
+                self.send_cors_response(200)
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "status": status,
+                    "message": "Produto aprovado e homologado com sucesso."
+                }).encode('utf-8'))
+
+                # 3. Executa a atualização na planilha remota do Google Sheets em thread de background assíncrona
+                import threading
+                def async_sheets_update():
+                    try:
+                        creds = authenticate()
+                        sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
+                        update_product_in_sheet(
+                            sheet_id=sheet_id,
+                            row_num=row_num,
+                            product_data=product_data,
+                            status=status,
+                            review_needed=False,
+                            review_reason=motivo,
+                            creds=creds,
+                            product_id=product_id
+                        )
+                    except Exception as sheet_err:
+                        print(f"⚠️ Aviso: Erro ao atualizar planilha remota em background: {sheet_err}")
+                    finally:
+                        gc.collect()
+
+                threading.Thread(target=async_sheets_update, daemon=True).start()
+
             except Exception as e:
+                import traceback
+                print(f"❌ Erro ao processar aprovação manual: {e}")
+                traceback.print_exc()
                 gc.collect()
                 self.send_cors_response(500)
                 self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
             finally:
                 gc.collect()
+
 
         else:
             self.send_cors_response(404, 'text/plain')
