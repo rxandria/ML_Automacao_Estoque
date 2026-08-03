@@ -217,56 +217,83 @@ def setup_google_sheet(folder_id, creds):
         traceback.print_exc()
         return "mock_sheet_id"
 
-def upload_product_photo(file_path, photos_folder_id, creds):
+def upload_product_photo(file_input, photos_folder_id, creds):
     """
-    Faz upload de imagem local para a pasta Fotos_Produtos e retorna link público.
+    Faz upload de imagem (caminho no disco, string base64 ou bytes) para o Google Drive e retorna link público.
     """
-    fallback_url = f"https://drive.google.com/file/d/mock_{os.path.basename(file_path)}/view"
+    filename = f"foto_{format_brasilia_time('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+    fallback_url = f"https://drive.google.com/file/d/mock_{filename}/view"
+    
     if not creds:
-        print(f"⚠️ [GOOGLE DRIVE] Credenciais ausentes. Retornando URL simulada para '{os.path.basename(file_path)}'.")
+        print(f"⚠️ [GOOGLE DRIVE] Credenciais ausentes. Retornando URL simulada '{fallback_url}'.")
         return fallback_url
+
     try:
         service = build("drive", "v3", credentials=creds)
+        media = None
+        buf = None
         
-        filename = os.path.basename(file_path)
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if not mime_type:
-            mime_type = 'application/octet-stream'
+        if isinstance(file_input, str) and os.path.exists(file_input):
+            filename = os.path.basename(file_input)
+            mime_type, _ = mimetypes.guess_type(file_input)
+            if not mime_type:
+                mime_type = 'image/jpeg'
+            media = MediaFileUpload(file_input, mimetype=mime_type, resumable=True)
+        elif isinstance(file_input, (str, bytes)):
+            from googleapiclient.http import MediaIoBaseUpload
+            import io
+            from scripts.vision_processor import clean_and_decode_image_bytes
             
-        print(f"📷 Fazendo upload de '{filename}' ({mime_type})...")
-        
+            clean_b = clean_and_decode_image_bytes(file_input)
+            buf = io.BytesIO(clean_b)
+            media = MediaIoBaseUpload(buf, mimetype='image/jpeg', resumable=True)
+            del clean_b
+        else:
+            media = MediaFileUpload(str(file_input), mimetype='image/jpeg', resumable=True)
+
+        print(f"📷 Fazendo upload para o Google Drive: '{filename}'...")
         file_metadata = {
             'name': filename,
             'parents': [photos_folder_id]
         }
-        media = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
         
-        file = service.files().create(
+        file_obj = service.files().create(
             body=file_metadata, 
             media_body=media, 
             fields='id, webViewLink'
         ).execute()
         
-        file_id = file.get('id')
-        print(f"📷 Upload concluído! ID do arquivo: {file_id}")
+        file_id = file_obj.get('id')
+        print(f"📷 Upload no Drive concluído! ID: {file_id}")
         
-        print("📷 Definindo permissões como pública para visualização...")
-        permission = {
-            'type': 'anyone',
-            'role': 'reader'
-        }
-        service.permissions().create(fileId=file_id, body=permission).execute()
+        # Define permissão como pública para visualização de imagem
+        try:
+            permission = {'type': 'anyone', 'role': 'reader'}
+            service.permissions().create(fileId=file_id, body=permission).execute()
+        except Exception as perm_err:
+            print(f"⚠️ Permissão pública no Drive: {perm_err}")
+
+        public_url = file_obj.get('webViewLink') or f"https://drive.google.com/file/d/{file_id}/view"
         
-        file_info = service.files().get(fileId=file_id, fields='webViewLink').execute()
-        public_url = file_info.get('webViewLink', fallback_url)
+        # Limpeza imediata de memória
+        if buf:
+            try:
+                buf.close()
+            except Exception:
+                pass
+            del buf
+        del media
+        gc.collect()
         
         return public_url
         
     except Exception as error:
         import traceback
-        print(f"❌ [GOOGLE DRIVE ERROR] Erro ao fazer upload do arquivo '{file_path}': {error}")
+        print(f"❌ [GOOGLE DRIVE ERROR] Erro ao fazer upload do arquivo '{file_input}': {error}")
         traceback.print_exc()
+        gc.collect()
         return fallback_url
+
 
 def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_reason, creds, product_id=""):
     """

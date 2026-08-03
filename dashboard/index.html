@@ -1616,8 +1616,8 @@
             renderPreviewGrid();
         }
 
-        // Converte e comprime imagens no cliente para Base64 (max 600px, qualidade JPEG 0.5)
-        async function compressImageToBase64(file, maxWidth = 600, maxHeight = 600, quality = 0.5) {
+        // Converte e comprime imagens no cliente para Base64 (max 800px mantendo proporção, qualidade JPEG 0.55)
+        async function compressImageToBase64(file, maxWidth = 800, maxHeight = 800, quality = 0.55) {
             if (!file || !file.type || !file.type.startsWith('image/')) return null;
 
             return new Promise((resolve) => {
@@ -1647,7 +1647,7 @@
                     ctx.drawImage(img, 0, 0, width, height);
                     
                     const base64Data = canvas.toDataURL('image/jpeg', quality);
-                    console.log(`📷 Convertida para Base64 (600px/0.5): ${file.name} (${(base64Data.length / 1024).toFixed(0)}KB em Base64)`);
+                    console.log(`📷 Convertida para Base64 (800px/0.55): ${file.name} (${width}x${height}px - ${(base64Data.length / 1024).toFixed(0)}KB em Base64)`);
                     resolve(base64Data);
                 };
                 
@@ -1673,10 +1673,11 @@
                 const base64Images = [];
 
                 for (let i = 0; i < filesToUpload.length; i++) {
-                    showToast(`Otimizando foto ${i + 1} de ${filesToUpload.length} (600px)...`, 'info');
-                    const b64 = await compressImageToBase64(filesToUpload[i], 600, 600, 0.5);
+                    showToast(`Otimizando foto ${i + 1} de ${filesToUpload.length} (800px)...`, 'info');
+                    const b64 = await compressImageToBase64(filesToUpload[i], 800, 800, 0.55);
                     if (b64) base64Images.push(b64);
                 }
+
 
                 if (base64Images.length === 0) {
                     throw new Error('Nenhuma foto válida para envio.');

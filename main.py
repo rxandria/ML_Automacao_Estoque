@@ -157,6 +157,18 @@ def run_pipeline(image_paths, dry_run=True):
         print(f"   Confiança da IA: {product_data.get('confidence_score')}")
         print(f"   Revisão Manual Necessária: {product_data.get('requires_manual_review')}")
         
+        # 4. Upload das imagens enviadas para o Google Drive e atualização de URLs
+        print("\n📷 Passo 4: Enviando fotos do produto para o Google Drive...")
+        public_urls = []
+        for idx, img_path in enumerate(image_paths):
+            print(f"🚀 Enviando foto {idx+1} para o Google Drive...")
+            url = upload_product_photo(img_path, photos_folder_id, creds)
+            public_urls.append(url)
+            gc.collect()
+
+        concatenated_urls = ", ".join(public_urls)
+        product_data["url_fotos"] = concatenated_urls
+
         # Se necessitar de revisão manual (baixa qualidade, dimensões ou dados inválidos)
         if product_data.get("requires_manual_review"):
             reason = product_data.get("review_reason", "Motivo desconhecido")
@@ -172,7 +184,7 @@ def run_pipeline(image_paths, dry_run=True):
                 creds=creds
             )
             
-            # Persistência garantida no cache local também para produtos retidos para revisão manual
+            # Persistência garantida no cache local também para produtos retidos para revisão manual com URLs do Drive
             local_item = {
                 "row_num": len(LOCAL_PRODUCTS) + 2,
                 "id": f"MLB{uuid.uuid4().hex[:10].upper()}",
@@ -181,7 +193,7 @@ def run_pipeline(image_paths, dry_run=True):
                 "preco": product_data.get("preco_sugerido", 50.0),
                 "estoque": product_data.get("estoque", 1),
                 "condicao": product_data.get("condicao", "used"),
-                "url_fotos": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
+                "url_fotos": concatenated_urls or "/temp_uploads/" + os.path.basename(main_image),
                 "status": status,
                 "review_needed": True,
                 "motivo_revisao": reason,
@@ -201,6 +213,7 @@ def run_pipeline(image_paths, dry_run=True):
                 "reason": reason,
                 "product_data": product_data
             }
+
 
 
         # 4. Otimização e Upload Sequencial de Imagens
