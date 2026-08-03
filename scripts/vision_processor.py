@@ -275,8 +275,6 @@ def analyze_product_image(image_path):
             del raw_img_bytes, img_to_send, buffered
             gc.collect()
 
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-            
             prompt = (
                 "Analise a imagem deste produto. Realize OCR de etiquetas, "
                 "identifique marcas, modelos (ex: caixas de som JBL, cabos, componentes, etc.), "
@@ -309,18 +307,50 @@ def analyze_product_image(image_path):
             }
             
             headers = {"Content-Type": "application/json"}
-            response = requests.post(gemini_url, json=payload, headers=headers, timeout=15)
+
+            # Lista de modelos suportados para fallback em ordem de prioridade
+            candidate_models = [
+                "gemini-2.0-flash",
+                "gemini-1.5-flash-latest",
+                "gemini-1.5-flash",
+                "gemini-1.5-pro",
+                "gemini-2.5-flash"
+            ]
+
+            response = None
+            last_error = ""
+
+            for model_name in candidate_models:
+                gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                print(f"🔗 Tentando API do Gemini Visão com o modelo '{model_name}'...")
+                
+                try:
+                    res = requests.post(gemini_url, json=payload, headers=headers, timeout=15)
+                    if res.status_code == 200:
+                        response = res
+                        print(f"✅ Modelo '{model_name}' respondeu com sucesso (200 OK)!")
+                        break
+                    elif res.status_code == 404:
+                        print(f"⚠️ Modelo '{model_name}' não encontrado (404). Tentando modelo alternativo...")
+                        last_error = f"404 Not Found ({model_name}): {res.text}"
+                    else:
+                        print(f"⚠️ Modelo '{model_name}' retornou HTTP {res.status_code}. Tentando modelo alternativo...")
+                        last_error = f"HTTP {res.status_code} ({model_name}): {res.text}"
+                except Exception as req_err:
+                    print(f"⚠️ Erro ao requisitar modelo '{model_name}': {req_err}")
+                    last_error = f"Erro de requisição ({model_name}): {req_err}"
             
-            # Limpa imediatamente o buffer base64 da memória após o envio da requisição
+            # Limpa imediatamente o buffer base64 da memória após o envio das requisições
             del img_base64, payload
             gc.collect()
 
-            if response.status_code != 200:
-                raise RuntimeError(f"Erro ao chamar API do Gemini ({response.status_code}): {response.text}")
+            if not response or response.status_code != 200:
+                raise RuntimeError(f"Erro ao chamar API do Gemini (Modelos testados: {candidate_models}): {last_error}")
                 
             resp_json = response.json()
             del response
             gc.collect()
+
 
             try:
                 raw_text = resp_json['candidates'][0]['content']['parts'][0]['text'].strip()
