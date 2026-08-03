@@ -210,17 +210,15 @@ def analyze_product_image(image_path):
             except Exception as clean_err:
                 print(f"⚠️ Erro ao higienizar imagem antes da análise: {clean_err}")
 
-        img = Image.open(image_path)
-        width, height = img.size
-        
-        # Calcula nitidez/contraste usando o desvio padrão de tons de cinza do NumPy
-        gray_img = img.convert('L')
-        std_dev = float(np.std(np.array(gray_img)))
+        # Calcula métricas da imagem usando context manager com fechamento automático
+        width, height, std_dev = 800, 800, 30.0
         try:
-            gray_img.close()
-        except Exception:
-            pass
-        del gray_img
+            with Image.open(image_path) as img:
+                width, height = img.size
+                with img.convert('L') as gray_img:
+                    std_dev = float(np.std(np.array(gray_img)))
+        except Exception as img_err:
+            print(f"⚠️ Aviso ao calcular métricas de nitidez da imagem: {img_err}")
         gc.collect()
 
         confidence_score = 95.0
@@ -239,7 +237,6 @@ def analyze_product_image(image_path):
             confidence_score -= 25
             
         # Conexão Real da IA com Gemini Visão
-        import io
         import base64
         import json
         import requests
@@ -272,25 +269,17 @@ def analyze_product_image(image_path):
                     "Configure a variável de ambiente GEMINI_API_KEY ou crie um arquivo .env."
                 )
                 
-            print("🔗 Conectando à API do Gemini Visão para análise real...")
+            print("🔗 Conectando à API do Gemini Visão para análise real (Zero PIL Memory)...")
             
-            # Prepara a imagem em base64 limpa
-            buffered = io.BytesIO()
-            img_to_send = img.convert("RGB")
-            img_to_send.save(buffered, format="JPEG", quality=80)
-            raw_img_bytes = buffered.getvalue()
+            # Leitura direta do arquivo de imagem do disco em Base64 sem alocação de objetos PIL
+            with open(image_path, "rb") as f:
+                raw_img_bytes = f.read()
+
             img_base64 = base64.b64encode(raw_img_bytes).decode('utf-8')
             img_base64 = re.sub(r'^data:image/[^;]+;base64,', '', img_base64).strip()
-            
-            # Fecha e deleta imediatamente os objetos de imagem em memória (img, img_to_send, buffered)
-            try:
-                img_to_send.close()
-                buffered.close()
-                img.close()
-            except Exception:
-                pass
-            del raw_img_bytes, img_to_send, buffered, img
+            del raw_img_bytes
             gc.collect()
+
 
 
             prompt = (

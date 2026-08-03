@@ -160,11 +160,29 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         print(f"   Confiança da IA: {product_data.get('confidence_score')}")
         print(f"   Revisão Manual Necessária: {product_data.get('requires_manual_review')}")
         
-        # 4. Upload das imagens enviadas para o Google Drive e atualização de URLs
-        print("\n📷 Passo 4: Enviando fotos do produto para o Google Drive...")
+        # 4. Sincronização IMEDIATA no Google Sheets (Garante a gravação antes dos uploads de mídia no Drive)
+        requires_review = product_data.get("requires_manual_review", False)
+        status = "REVISAO_MANUAL" if requires_review else "HOMOLOGADO (DRY RUN)"
+        reason = product_data.get("review_reason", "Aprovado via IA") if requires_review else "Validação do payload aprovada via IA."
+
+        print(f"\n📊 Passo 4: Gravando registro do produto imediatamente no Google Sheets (Status: {status})...")
+        sheets_ok = add_product_to_sheet(
+            sheet_id=sheet_id,
+            product_data=product_data,
+            status=status,
+            review_needed=requires_review,
+            review_reason=reason,
+            creds=creds,
+            product_id=product_id
+        )
+        if sheets_ok:
+            print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso (Antes dos Uploads)!")
+
+        # 5. Upload sequencial leve das fotos para o Google Drive
+        print("\n📷 Passo 5: Enviando fotos do produto para o Google Drive...")
         public_urls = []
         for idx, img_path in enumerate(image_paths):
-            print(f"🚀 Enviando foto {idx+1} para o Google Drive...")
+            print(f"🚀 Enviando foto {idx+1}/{len(image_paths)} para o Google Drive...")
             url = upload_product_photo(img_path, photos_folder_id, creds)
             public_urls.append(url)
             gc.collect()
@@ -173,95 +191,19 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         product_data["url_fotos"] = concatenated_urls
         drive_thumb = public_urls[0] if public_urls else concatenated_urls
 
-        # Se necessitar de revisão manual (baixa qualidade, dimensões ou dados inválidos)
-        if product_data.get("requires_manual_review"):
-            reason = product_data.get("review_reason", "Motivo desconhecido")
-            print(f"\n⚠️ [REVISÃO MANUAL DETECTADA] {reason}")
-            
-            status = "REVISAO_MANUAL"
-            sheets_ok = add_product_to_sheet(
-                sheet_id=sheet_id,
-                product_data=product_data,
-                status=status,
-                review_needed=True,
-                review_reason=reason,
-                creds=creds,
-                product_id=product_id
-            )
-            if sheets_ok:
-                print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso!")
-            
-            # Persistência no cache local reutilizando product_id e adicionando URLs reais do Drive
-            local_item = {
-                "row_num": len(LOCAL_PRODUCTS) + 2,
-                "id": product_id,
-                "titulo": product_data.get("titulo", "Produto em Revisão"),
-                "categoria": product_data.get("categoria", "Outros"),
-                "preco": product_data.get("preco_sugerido", 50.0),
-                "estoque": product_data.get("estoque", 1),
-                "condicao": product_data.get("condicao", "used"),
-                "url_fotos": concatenated_urls,
-                "status": status,
-                "review_needed": True,
-                "motivo_revisao": reason,
-                "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
-                "local_thumb": drive_thumb,
-                "original_filename": os.path.basename(main_image)
-            }
-            
-            found = False
-            for idx_p, p in enumerate(LOCAL_PRODUCTS):
-                if str(p.get("id")) == str(product_id):
-                    LOCAL_PRODUCTS[idx_p] = local_item
-                    found = True
-                    break
-            if not found:
-                LOCAL_PRODUCTS.append(local_item)
-
-            save_local_products(LOCAL_PRODUCTS)
-            gc.collect()
-
-            print("\n❌ Pipeline interrompido: O produto necessita de revisão humana.")
-            return {
-                "success": False,
-                "requires_manual_review": True,
-                "reason": reason,
-                "product_data": product_data
-            }
-
-        # 5. Integração e Validação do Mercado Livre
-        print("\n🛍️ Passo 5: Validando publicação no Mercado Livre...")
-        publisher = MLPublisher(access_token="mock_token_abc123")
-        
-        result = publisher.publish_item(product_data, public_urls, dry_run=dry_run)
-        status = "HOMOLOGADO (DRY RUN)" if dry_run else ("PUBLICADO" if result.get("status") == "success" else "ERRO")
-        ml_id = result.get("id", product_id)
-        
-        sheets_ok = add_product_to_sheet(
-            sheet_id=sheet_id,
-            product_data=product_data,
-            status=status,
-            review_needed=False,
-            review_reason="Validação do payload aprovada com múltiplas fotos.",
-            creds=creds,
-            product_id=ml_id
-        )
-        if sheets_ok:
-            print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso!")
-
-        # Registra no armazenamento local com URLs reais do Google Drive
+        # 6. Atualização final do cache local de produtos com as URLs do Google Drive
         local_item = {
             "row_num": len(LOCAL_PRODUCTS) + 2,
-            "id": ml_id,
-            "titulo": product_data.get("titulo", ""),
-            "categoria": product_data.get("categoria", ""),
-            "preco": product_data.get("preco_sugerido", 0.0),
+            "id": product_id,
+            "titulo": product_data.get("titulo", "Produto"),
+            "categoria": product_data.get("categoria", "Outros"),
+            "preco": product_data.get("preco_sugerido", 50.0),
             "estoque": product_data.get("estoque", 1),
-            "condicao": product_data.get("condicao", "new"),
+            "condicao": product_data.get("condicao", "used"),
             "url_fotos": concatenated_urls,
             "status": status,
-            "review_needed": False,
-            "motivo_revisao": product_data.get("review_reason", ""),
+            "review_needed": requires_review,
+            "motivo_revisao": reason,
             "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
             "local_thumb": drive_thumb,
             "original_filename": os.path.basename(main_image)
@@ -269,7 +211,7 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         
         found = False
         for idx_p, p in enumerate(LOCAL_PRODUCTS):
-            if str(p.get("id")) == str(product_id) or str(p.get("id")) == str(ml_id):
+            if str(p.get("id")) == str(product_id):
                 LOCAL_PRODUCTS[idx_p] = local_item
                 found = True
                 break
@@ -278,6 +220,20 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
 
         save_local_products(LOCAL_PRODUCTS)
         gc.collect()
+
+        if requires_review:
+            print("\n❌ Pipeline interrompido: O produto necessita de revisão humana.")
+            return {
+                "success": False,
+                "requires_manual_review": True,
+                "reason": reason,
+                "product_data": product_data
+            }
+
+        # 7. Validação do Mercado Livre (Dry Run)
+        print("\n🛍️ Passo 7: Validando publicação no Mercado Livre...")
+        publisher = MLPublisher(access_token="mock_token_abc123")
+        publisher.publish_item(product_data, public_urls, dry_run=dry_run)
             
         print(f"\n🎉 PIPELINE CONCLUÍDO COM SUCESSO! Status: {status}")
         return {
@@ -286,6 +242,7 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
             "status": status,
             "product_data": product_data
         }
+
 
         
     except Exception as e:
