@@ -1549,13 +1549,13 @@
             handleFiles(this.files);
         });
 
-        // Adiciona múltiplos arquivos respeitando o limite de 6
+        // Adiciona múltiplos arquivos respeitando o limite estrito de 3 fotos
         function handleFiles(files) {
             const incomingFiles = Array.from(files);
             
             for (let i = 0; i < incomingFiles.length; i++) {
-                if (selectedFiles.length >= 6) {
-                    showToast('Limite máximo de 6 fotos atingido.', 'warning');
+                if (selectedFiles.length >= 3) {
+                    showToast('Limite máximo de 3 fotos por lote atingido (otimização de RAM).', 'warning');
                     break;
                 }
                 selectedFiles.push(incomingFiles[i]);
@@ -1599,8 +1599,8 @@
             // Atualiza o texto do botão com a contagem de fotos
             btnProcess.innerHTML = `<i class="fa-solid fa-rocket"></i> Enviar para Automação (${selectedFiles.length} Fotos)`;
             
-            // Oculta o botão de adicionar mais se atingir o limite de 6
-            if (selectedFiles.length >= 6) {
+            // Oculta o botão de adicionar mais se atingir o limite estrito de 3
+            if (selectedFiles.length >= 3) {
                 btnAddMore.style.display = 'none';
             } else {
                 btnAddMore.style.display = 'flex';
@@ -1616,8 +1616,8 @@
             renderPreviewGrid();
         }
 
-        // Compactação de imagens no cliente (largura/altura máxima de 1200px, qualidade JPEG 0.7)
-        async function compressImage(file, maxWidth = 1200, maxHeight = 1200, quality = 0.7) {
+        // Compactação de imagens no cliente (largura/altura máxima de 800px, qualidade JPEG 0.6 / max 150KB)
+        async function compressImage(file, maxWidth = 800, maxHeight = 800, quality = 0.6) {
             if (!file || !file.type || !file.type.startsWith('image/')) return file;
 
             return new Promise((resolve) => {
@@ -1657,7 +1657,7 @@
                                 type: 'image/jpeg',
                                 lastModified: Date.now()
                             });
-                            console.log(`📷 Compactada no cliente: ${file.name} (${(file.size / 1024).toFixed(0)}KB -> ${(compressedFile.size / 1024).toFixed(0)}KB)`);
+                            console.log(`📷 Compactada no cliente (800px/0.6): ${file.name} (${(file.size / 1024).toFixed(0)}KB -> ${(compressedFile.size / 1024).toFixed(0)}KB)`);
                             resolve(compressedFile);
                         },
                         'image/jpeg',
@@ -1681,13 +1681,16 @@
             try {
                 btnProcess.disabled = true;
                 loader.style.display = 'block';
-                showToast('Compactando fotos antes do envio...', 'info');
+                showToast('Otimizando fotos antes do envio...', 'info');
 
-                // 1. Redimensiona/comprime fotos no cliente sequencialmente (max 1200px, qualidade 0.7)
+                // Garante limite máximo de 3 fotos
+                const filesToUpload = selectedFiles.slice(0, 3);
+
+                // 1. Redimensiona/comprime fotos no cliente sequencialmente (max 800px, qualidade 0.6)
                 const compressedFiles = [];
-                for (let i = 0; i < selectedFiles.length; i++) {
-                    showToast(`Otimizando foto ${i + 1} de ${selectedFiles.length}...`, 'info');
-                    const compressed = await compressImage(selectedFiles[i], 1200, 1200, 0.7);
+                for (let i = 0; i < filesToUpload.length; i++) {
+                    showToast(`Otimizando foto ${i + 1} de ${filesToUpload.length} (max 800px)...`, 'info');
+                    const compressed = await compressImage(filesToUpload[i], 800, 800, 0.6);
                     compressedFiles.push(compressed);
                 }
 
@@ -1695,6 +1698,7 @@
                 compressedFiles.forEach((file) => {
                     formData.append('images', file);
                 });
+
 
 
                 showToast('Enviando fotos otimizadas para a automação...', 'info');

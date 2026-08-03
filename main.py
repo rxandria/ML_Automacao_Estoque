@@ -727,6 +727,12 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps({"error": "Bad Request: No files uploaded"}).encode('utf-8'))
                     return
                 
+                # Garante limite estrito de no máximo 3 fotos por lote para controle de memória RAM
+                if len(saved_paths) > 3:
+                    print(f"⚠️ Truncando lote de {len(saved_paths)} para no máximo 3 fotos para conservação de RAM.")
+                    saved_paths = saved_paths[:3]
+
+                
                 # 1. Executa a análise local da imagem principal de forma síncrona com import sob demanda
                 main_image = saved_paths[0]
                 product_data = analyze_product_image(main_image)

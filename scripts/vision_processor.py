@@ -209,6 +209,12 @@ def analyze_product_image(image_path):
         # Calcula nitidez/contraste usando o desvio padrão de tons de cinza do NumPy
         gray_img = img.convert('L')
         std_dev = float(np.std(np.array(gray_img)))
+        try:
+            gray_img.close()
+        except Exception:
+            pass
+        del gray_img
+        gc.collect()
 
         confidence_score = 95.0
         requires_manual_review = False
@@ -264,16 +270,21 @@ def analyze_product_image(image_path):
             # Prepara a imagem em base64 limpa
             buffered = io.BytesIO()
             img_to_send = img.convert("RGB")
-            img_to_send.save(buffered, format="JPEG", quality=85)
+            img_to_send.save(buffered, format="JPEG", quality=80)
             raw_img_bytes = buffered.getvalue()
             img_base64 = base64.b64encode(raw_img_bytes).decode('utf-8')
             img_base64 = re.sub(r'^data:image/[^;]+;base64,', '', img_base64).strip()
             
-            # Fecha a imagem convertida auxiliar e limpa o buffer
-            img_to_send.close()
-            buffered.close()
-            del raw_img_bytes, img_to_send, buffered
+            # Fecha e deleta imediatamente os objetos de imagem em memória (img, img_to_send, buffered)
+            try:
+                img_to_send.close()
+                buffered.close()
+                img.close()
+            except Exception:
+                pass
+            del raw_img_bytes, img_to_send, buffered, img
             gc.collect()
+
 
             prompt = (
                 "Analise a imagem deste produto. Realize OCR de etiquetas, "
