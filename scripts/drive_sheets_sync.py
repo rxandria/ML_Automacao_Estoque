@@ -5,7 +5,10 @@ Google Drive & Sheets synchronization script.
 import os.path
 import mimetypes
 import datetime
+import uuid
+import gc
 from datetime import timezone, timedelta
+
 try:
     from zoneinfo import ZoneInfo
     BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")

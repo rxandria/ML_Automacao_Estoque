@@ -834,9 +834,22 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 data = json.loads(body.decode('utf-8'))
                 del body
                 
-                idx = data.get("index")
-                row_num = int(data.get("row_num", idx + 2 if idx is not None else 2))
-                product_id = data.get("id", data.get("product_id", ""))
+                raw_idx = data.get("index")
+                try:
+                    idx = int(raw_idx) if raw_idx is not None else None
+                except Exception:
+                    idx = None
+                    
+                raw_row = data.get("row_num")
+                if raw_row is not None:
+                    try:
+                        row_num = int(raw_row)
+                    except Exception:
+                        row_num = (idx + 2) if idx is not None else 2
+                else:
+                    row_num = (idx + 2) if idx is not None else 2
+
+                product_id = str(data.get("id") or data.get("product_id") or "").strip()
                 
                 titulo = sanitize_title(data.get("titulo", ""))
                 categoria = data.get("categoria", "Outros")
@@ -862,10 +875,11 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 # 1. Atualização imediata no cache local de produtos (sem reprocessar imagem)
                 updated = False
                 for p in LOCAL_PRODUCTS:
-                    if (product_id and p.get("id") == product_id) or \
-                       p.get("row_num") == row_num or \
-                       (idx is not None and idx < len(LOCAL_PRODUCTS) and LOCAL_PRODUCTS[idx] == p) or \
-                       p.get("titulo") == titulo:
+                    if (product_id and str(p.get("id")) == product_id) or \
+                       str(p.get("row_num")) == str(row_num) or \
+                       (idx is not None and 0 <= idx < len(LOCAL_PRODUCTS) and LOCAL_PRODUCTS[idx] == p) or \
+                       (titulo and p.get("titulo") == titulo):
+
                         p["titulo"] = titulo
                         p["categoria"] = categoria
                         p["preco"] = preco
