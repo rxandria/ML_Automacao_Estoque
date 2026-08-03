@@ -180,35 +180,40 @@ def run_pipeline(image_paths, dry_run=True):
                 "product_data": product_data
             }
 
-        # 4. Otimização das Imagens
-        # - 1ª imagem (Principal): remove o fundo com rembg.
-        # - Demais imagens: apenas padroniza tamanho sem remover o fundo.
-        print("\n📷 Passo 4: Otimizando imagens para padrões do Mercado Livre...")
-        optimized_paths = []
+        # 4. Otimização e Upload Sequencial de Imagens
+        print("\n📷 Passo 4: Otimizando e enviando imagens sequencialmente...")
         public_urls = []
+        optimized_paths = []
         
         for idx, img_path in enumerate(image_paths):
             base_name = os.path.basename(img_path)
             name, ext = os.path.splitext(base_name)
             
-            # Determina se é a imagem principal ou adicional
             is_main = (idx == 0)
             suffix = "main_opt" if is_main else f"sub_{idx}_opt"
             optimized_path = os.path.join("temp_uploads", f"{name}_{suffix}.jpg")
             
-            # Executa otimização (remove_bg=True apenas para a foto principal)
+            # Otimização individual (remove_bg=True apenas para foto principal)
             optimize_image_for_ml(img_path, optimized_path, remove_bg=is_main)
             optimized_paths.append(optimized_path)
             
-            # 5. Upload das imagens otimizadas para o Google Drive
+            # Upload imediato para o Drive
             print(f"🚀 Passo 5.{idx+1}: Enviando foto {idx+1} para o Google Drive...")
             url = upload_product_photo(optimized_path, photos_folder_id, creds)
             public_urls.append(url)
+            
+            # Exclusão imediata do arquivo otimizado local e coleta de lixo por foto
+            if os.path.exists(optimized_path):
+                try:
+                    os.remove(optimized_path)
+                except Exception:
+                    pass
             gc.collect()
 
         # Junta todas as URLs separadas por vírgula para salvar na Planilha
         concatenated_urls = ", ".join(public_urls)
         product_data["url_fotos"] = concatenated_urls
+
         
         # 6. Integração e Validação do Mercado Livre
         print("\n🛍️ Passo 6: Validando publicação no Mercado Livre...")
@@ -644,8 +649,8 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 
                 from scripts.vision_processor import clean_and_decode_image_bytes, analyze_product_image
 
-                for part in parts:
-                    if b'filename="' in part:
+                for idx, part in enumerate(parts):
+                    if part and b'filename="' in part:
                         headers_part, file_content = part.split(b'\r\n\r\n', 1)
                         file_content = file_content.rsplit(b'\r\n', 1)[0]
                         
@@ -656,19 +661,19 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                             os.makedirs("temp_uploads", exist_ok=True)
                             file_path = os.path.join("temp_uploads", filename)
                             
-                            # Higieniza e decodifica bytes base64 / Data URL caso o canvas do celular tenha enviado em formato codificado
                             clean_bytes = clean_and_decode_image_bytes(file_content)
-                            
                             with open(file_path, 'wb') as f:
                                 f.write(clean_bytes)
                             saved_paths.append(file_path)
 
-                            # Libera imediatamente a memória de cada part/buffer
+                            # Libera imediatamente a memória de cada parte gravada
                             del file_content, clean_bytes, headers_part
-                            gc.collect()
+                    parts[idx] = None
+                    gc.collect()
                 
                 del parts, body
                 gc.collect()
+
 
                 if not saved_paths:
                     self.send_cors_response(400)

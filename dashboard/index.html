@@ -1616,8 +1616,8 @@
             renderPreviewGrid();
         }
 
-        // Compactação de imagens no cliente (largura/altura máxima de 1080px, qualidade JPEG 0.75)
-        async function compressImage(file, maxWidth = 1080, maxHeight = 1080, quality = 0.75) {
+        // Compactação de imagens no cliente (largura/altura máxima de 1200px, qualidade JPEG 0.7)
+        async function compressImage(file, maxWidth = 1200, maxHeight = 1200, quality = 0.7) {
             if (!file || !file.type || !file.type.startsWith('image/')) return file;
 
             return new Promise((resolve) => {
@@ -1683,15 +1683,19 @@
                 loader.style.display = 'block';
                 showToast('Compactando fotos antes do envio...', 'info');
 
-                // 1. Redimensiona/comprime fotos no cliente (max 1080px, qualidade 0.75)
-                const compressedFiles = await Promise.all(
-                    selectedFiles.map(file => compressImage(file, 1080, 1080, 0.75))
-                );
+                // 1. Redimensiona/comprime fotos no cliente sequencialmente (max 1200px, qualidade 0.7)
+                const compressedFiles = [];
+                for (let i = 0; i < selectedFiles.length; i++) {
+                    showToast(`Otimizando foto ${i + 1} de ${selectedFiles.length}...`, 'info');
+                    const compressed = await compressImage(selectedFiles[i], 1200, 1200, 0.7);
+                    compressedFiles.push(compressed);
+                }
 
                 const formData = new FormData();
                 compressedFiles.forEach((file) => {
                     formData.append('images', file);
                 });
+
 
                 showToast('Enviando fotos otimizadas para a automação...', 'info');
 
