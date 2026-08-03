@@ -162,16 +162,38 @@ def run_pipeline(image_paths, dry_run=True):
             reason = product_data.get("review_reason", "Motivo desconhecido")
             print(f"\n⚠️ [REVISÃO MANUAL DETECTADA] {reason}")
             
-            # Adiciona na planilha com status REVISAO_MANUAL
+            status = "REVISAO_MANUAL"
             add_product_to_sheet(
                 sheet_id=sheet_id,
                 product_data=product_data,
-                status="REVISAO_MANUAL",
+                status=status,
                 review_needed=True,
                 review_reason=reason,
                 creds=creds
             )
+            
+            # Persistência garantida no cache local também para produtos retidos para revisão manual
+            local_item = {
+                "row_num": len(LOCAL_PRODUCTS) + 2,
+                "id": f"MLB{uuid.uuid4().hex[:10].upper()}",
+                "titulo": product_data.get("titulo", "Produto em Revisão"),
+                "categoria": product_data.get("categoria", "Outros"),
+                "preco": product_data.get("preco_sugerido", 50.0),
+                "estoque": product_data.get("estoque", 1),
+                "condicao": product_data.get("condicao", "used"),
+                "url_fotos": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
+                "status": status,
+                "review_needed": True,
+                "motivo_revisao": reason,
+                "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
+                "local_thumb": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
+                "original_filename": os.path.basename(main_image)
+            }
+            LOCAL_PRODUCTS[:] = [p for p in LOCAL_PRODUCTS if p.get("id") != local_item["id"]]
+            LOCAL_PRODUCTS.append(local_item)
+            save_local_products(LOCAL_PRODUCTS)
             gc.collect()
+
             print("\n❌ Pipeline interrompido: O produto necessita de revisão humana.")
             return {
                 "success": False,
@@ -179,6 +201,7 @@ def run_pipeline(image_paths, dry_run=True):
                 "reason": reason,
                 "product_data": product_data
             }
+
 
         # 4. Otimização e Upload Sequencial de Imagens
         print("\n📷 Passo 4: Otimizando e enviando imagens sequencialmente...")
@@ -365,8 +388,32 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
 
 class DashboardHTTPHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Log otimizado e leve para evitar alocações desnecessárias em repouso
-        sys.stdout.write(f"[{format_brasilia_time('%H:%M:%S')}] {format % args}\n")
+        try:
+            sys.stdout.write(f"[{format_brasilia_time('%H:%M:%S')}] {format % args}\n")
+        except Exception:
+            pass
+
+    def safe_write_response(self, status=200, content=b"", content_type='application/json'):
+        """
+        Envia resposta HTTP com tratamento seguro contra BrokenPipeError, ConnectionResetError e OSError.
+        Garante que desconexões bruscas de sockets de clientes móveis nunca interrompam
+        a execução do servidor nem das threads de fundo de sincronização/persistência.
+        """
+        try:
+            if isinstance(content, (dict, list)):
+                content_bytes = json.dumps(content).encode('utf-8')
+            elif isinstance(content, str):
+                content_bytes = content.encode('utf-8')
+            else:
+                content_bytes = content
+
+            self.send_cors_response(status, content_type)
+            self.wfile.write(content_bytes)
+        except (BrokenPipeError, ConnectionResetError, OSError) as sock_err:
+            print(f"⚠️ [SOCKET WARN] Cliente HTTP desconectou antes da entrega da resposta ({sock_err}).")
+        except Exception as err:
+            print(f"⚠️ [HTTP RESP ERROR] Falha ao enviar resposta HTTP: {err}")
+
 
 
     def get_authenticated_user(self):
@@ -536,9 +583,9 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     if not any(sp.get("id") == lp.get("id") for sp in products):
                         products.append(lp)
 
-            # Sempre responde com 200 OK e JSON array válido (evita estouro 500 no frontend)
-            self.send_cors_response(200)
-            self.wfile.write(json.dumps(products).encode('utf-8'))
+            # Sempre responde com 200 OK e JSON array válido de forma segura contra desconexões de socket
+            self.safe_write_response(200, products)
+
 
         else:
             self.send_cors_response(404, 'text/plain')
@@ -686,7 +733,29 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 requires_review = product_data.get("requires_manual_review", False)
                 gc.collect()
 
-                # 2. Executa o restante do pipeline (otimização, upload ao Drive, Sheets e ML) em background
+                # Persistência imediata e garantida no cache local de produtos (salva no disco ANTES de responder ao socket)
+                initial_local_item = {
+                    "row_num": len(LOCAL_PRODUCTS) + 2,
+                    "id": f"MLB{uuid.uuid4().hex[:10].upper()}",
+                    "titulo": product_data.get("titulo", "Produto Enviado"),
+                    "categoria": product_data.get("categoria", "Outros"),
+                    "preco": product_data.get("preco_sugerido", 50.0),
+                    "estoque": product_data.get("estoque", 1),
+                    "condicao": product_data.get("condicao", "used"),
+                    "url_fotos": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
+                    "status": "REVISAO_MANUAL" if requires_review else "PENDENTE",
+                    "review_needed": requires_review,
+                    "motivo_revisao": product_data.get("review_reason", ""),
+                    "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
+                    "local_thumb": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
+                    "original_filename": os.path.basename(main_image)
+                }
+                LOCAL_PRODUCTS[:] = [p for p in LOCAL_PRODUCTS if p.get("id") != initial_local_item["id"]]
+                LOCAL_PRODUCTS.append(initial_local_item)
+                save_local_products(LOCAL_PRODUCTS)
+                gc.collect()
+
+                # 2. Executa o restante do pipeline (otimização, upload ao Drive, Sheets e ML) em worker background 100% isolado
                 import threading
                 def async_pipeline_worker():
                     try:
@@ -701,16 +770,14 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 
                 threading.Thread(target=async_pipeline_worker, daemon=True).start()
 
-                
-                # 3. Retorna resposta síncrona imediatamente
+                # 3. Retorna resposta HTTP síncrona de forma segura contra BrokenPipeError / desconexão de cliente
                 result = {
                     "success": True,
                     "requires_manual_review": requires_review,
                     "product_data": product_data
                 }
-                
-                self.send_cors_response(200)
-                self.wfile.write(json.dumps(result).encode('utf-8'))
+                self.safe_write_response(200, result)
+
                 
             except Exception as e:
                 import traceback
