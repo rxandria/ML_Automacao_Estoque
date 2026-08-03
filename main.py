@@ -678,59 +678,59 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Unauthorized"}).encode('utf-8'))
             return
 
-        # API: Upload de imagens e execução automática do Pipeline (Suporta múltiplas imagens)
+        # API: Upload de imagens via JSON Base64 (Leitura ultraleve sem multipart)
         if path == '/api/upload':
             try:
-                content_type = self.headers.get('content-type', '')
-                if 'boundary=' not in content_type:
-                    self.send_cors_response(400)
-                    self.wfile.write(json.dumps({"error": "Bad Request: boundary missing"}).encode('utf-8'))
+                content_length = int(self.headers.get('content-length', 0))
+                if content_length <= 0:
+                    self.safe_write_response(400, {"error": "Corpo da requisição vazio."})
                     return
                 
-                boundary = content_type.split('boundary=')[1].strip().encode('utf-8')
-                content_length = int(self.headers.get('content-length', 0))
-                body = self.rfile.read(content_length)
-                
-                parts = body.split(boundary)
-                saved_paths = []
-                
-                from scripts.vision_processor import clean_and_decode_image_bytes, analyze_product_image
-
-                for idx, part in enumerate(parts):
-                    if part and b'filename="' in part:
-                        headers_part, file_content = part.split(b'\r\n\r\n', 1)
-                        file_content = file_content.rsplit(b'\r\n', 1)[0]
-                        
-                        filename_match = re.search(rb'filename="([^"]+)"', headers_part)
-                        if filename_match:
-                            filename = filename_match.group(1).decode('utf-8')
-                            
-                            os.makedirs("temp_uploads", exist_ok=True)
-                            file_path = os.path.join("temp_uploads", filename)
-                            
-                            clean_bytes = clean_and_decode_image_bytes(file_content)
-                            with open(file_path, 'wb') as f:
-                                f.write(clean_bytes)
-                            saved_paths.append(file_path)
-
-                            # Libera imediatamente a memória de cada parte gravada
-                            del file_content, clean_bytes, headers_part
-                    parts[idx] = None
-                    gc.collect()
-                
-                del parts, body
+                body_bytes = self.rfile.read(content_length)
+                payload = json.loads(body_bytes.decode('utf-8'))
+                del body_bytes
                 gc.collect()
 
+                raw_images = payload.get("images", [])
+                if isinstance(raw_images, str):
+                    raw_images = [raw_images]
+                    
+                if not raw_images or not isinstance(raw_images, list):
+                    self.safe_write_response(400, {"error": "Nenhuma imagem em formato JSON Base64 enviada."})
+                    return
+
+                # Limita a no máximo 3 fotos por envio
+                if len(raw_images) > 3:
+                    raw_images = raw_images[:3]
+
+                os.makedirs("temp_uploads", exist_ok=True)
+                saved_paths = []
+                from scripts.vision_processor import clean_and_decode_image_bytes, analyze_product_image
+
+                # Decodifica e salva cada imagem base64 uma por uma em arquivo temporário no disco
+                for idx, b64_item in enumerate(raw_images):
+                    if not b64_item:
+                        continue
+                    
+                    filename = f"upload_{format_brasilia_time('%Y%m%d_%H%M%S')}_{idx+1}.jpg"
+                    file_path = os.path.join("temp_uploads", filename)
+                    
+                    clean_bytes = clean_and_decode_image_bytes(b64_item)
+                    with open(file_path, 'wb') as f:
+                        f.write(clean_bytes)
+                    saved_paths.append(file_path)
+                    
+                    del clean_bytes
+                    raw_images[idx] = None
+                    gc.collect()
+
+                del raw_images, payload
+                gc.collect()
 
                 if not saved_paths:
-                    self.send_cors_response(400)
-                    self.wfile.write(json.dumps({"error": "Bad Request: No files uploaded"}).encode('utf-8'))
+                    self.safe_write_response(400, {"error": "Falha ao decodificar imagens enviadas."})
                     return
-                
-                # Garante limite estrito de no máximo 3 fotos por lote para controle de memória RAM
-                if len(saved_paths) > 3:
-                    print(f"⚠️ Truncando lote de {len(saved_paths)} para no máximo 3 fotos para conservação de RAM.")
-                    saved_paths = saved_paths[:3]
+
 
                 
                 # 1. Executa a análise local da imagem principal de forma síncrona com import sob demanda

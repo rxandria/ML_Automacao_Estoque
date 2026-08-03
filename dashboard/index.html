@@ -1616,9 +1616,9 @@
             renderPreviewGrid();
         }
 
-        // Compactação de imagens no cliente (largura/altura máxima de 800px, qualidade JPEG 0.6 / max 150KB)
-        async function compressImage(file, maxWidth = 800, maxHeight = 800, quality = 0.6) {
-            if (!file || !file.type || !file.type.startsWith('image/')) return file;
+        // Converte e comprime imagens no cliente para Base64 (max 600px, qualidade JPEG 0.5)
+        async function compressImageToBase64(file, maxWidth = 600, maxHeight = 600, quality = 0.5) {
+            if (!file || !file.type || !file.type.startsWith('image/')) return null;
 
             return new Promise((resolve) => {
                 const img = new Image();
@@ -1646,72 +1646,57 @@
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, width, height);
                     
-                    canvas.toBlob(
-                        (blob) => {
-                            if (!blob) {
-                                resolve(file);
-                                return;
-                            }
-                            const rawName = file.name ? file.name.replace(/\.[^/.]+$/, "") : "photo";
-                            const compressedFile = new File([blob], `${rawName}.jpg`, {
-                                type: 'image/jpeg',
-                                lastModified: Date.now()
-                            });
-                            console.log(`📷 Compactada no cliente (800px/0.6): ${file.name} (${(file.size / 1024).toFixed(0)}KB -> ${(compressedFile.size / 1024).toFixed(0)}KB)`);
-                            resolve(compressedFile);
-                        },
-                        'image/jpeg',
-                        quality
-                    );
+                    const base64Data = canvas.toDataURL('image/jpeg', quality);
+                    console.log(`📷 Convertida para Base64 (600px/0.5): ${file.name} (${(base64Data.length / 1024).toFixed(0)}KB em Base64)`);
+                    resolve(base64Data);
                 };
                 
                 img.onerror = () => {
                     URL.revokeObjectURL(url);
-                    resolve(file);
+                    resolve(null);
                 };
                 
                 img.src = url;
             });
         }
 
-        // Envia todas as fotos selecionadas para a Automação (com compactação prévia)
+        // Envia todas as fotos selecionadas para a Automação via JSON Base64 (Leitura ultraleve sem multipart)
         btnProcess.addEventListener('click', async () => {
             if (selectedFiles.length === 0) return;
 
             try {
                 btnProcess.disabled = true;
                 loader.style.display = 'block';
-                showToast('Otimizando fotos antes do envio...', 'info');
+                showToast('Otimizando fotos em Base64...', 'info');
 
-                // Garante limite máximo de 3 fotos
                 const filesToUpload = selectedFiles.slice(0, 3);
+                const base64Images = [];
 
-                // 1. Redimensiona/comprime fotos no cliente sequencialmente (max 800px, qualidade 0.6)
-                const compressedFiles = [];
                 for (let i = 0; i < filesToUpload.length; i++) {
-                    showToast(`Otimizando foto ${i + 1} de ${filesToUpload.length} (max 800px)...`, 'info');
-                    const compressed = await compressImage(filesToUpload[i], 800, 800, 0.6);
-                    compressedFiles.push(compressed);
+                    showToast(`Otimizando foto ${i + 1} de ${filesToUpload.length} (600px)...`, 'info');
+                    const b64 = await compressImageToBase64(filesToUpload[i], 600, 600, 0.5);
+                    if (b64) base64Images.push(b64);
                 }
 
-                const formData = new FormData();
-                compressedFiles.forEach((file) => {
-                    formData.append('images', file);
-                });
+                if (base64Images.length === 0) {
+                    throw new Error('Nenhuma foto válida para envio.');
+                }
 
-
-
-                showToast('Enviando fotos otimizadas para a automação...', 'info');
+                showToast('Enviando payload JSON otimizado...', 'info');
 
                 const response = await fetch('/api/upload', {
                     method: 'POST',
-                    body: formData
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ images: base64Images })
                 });
                 
                 if (response.status === 401 || response.status === 403) {
                     showAuthErrorAndRedirect('Sessão expirada. Faça login novamente.');
                     return;
                 }
+
 
                 if (!response.ok) {
                     const errData = await response.json().catch(() => ({}));

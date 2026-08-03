@@ -9,44 +9,51 @@ import base64
 import traceback
 
 
-def clean_and_decode_image_bytes(raw_bytes):
+def clean_and_decode_image_bytes(raw_input):
     """
-    Limpa e decodifica bytes de imagem recebidos.
+    Limpa e decodifica bytes ou strings de imagem recebidos.
     Se contiver cabeçalhos Data URL (ex: data:image/jpeg;base64,...) ou string em base64,
     remove o cabeçalho e decodifica para bytes binários puros de imagem.
     """
-    if not raw_bytes:
+    if not raw_input:
         return b""
         
     try:
-        # Tenta interpretar o cabeçalho como texto para identificar prefixos Data URL
-        text_sample = raw_bytes[:120].decode('utf-8', errors='ignore').strip()
-        
-        if "base64," in text_sample or text_sample.startswith("data:image/"):
-            if b"base64," in raw_bytes:
-                _, base64_str = raw_bytes.split(b"base64,", 1)
-            else:
-                base64_str = raw_bytes
-            
-            base64_str = base64_str.strip()
-            return base64.b64decode(base64_str)
-            
-        # Se for ASCII base64 puro (sem números mágicos de JPEG/PNG/GIF/WEBP)
-        is_binary_header = (
-            raw_bytes.startswith(b'\xff\xd8') or  # JPEG
-            raw_bytes.startswith(b'\x89PNG') or  # PNG
-            raw_bytes.startswith(b'GIF8') or     # GIF
-            raw_bytes.startswith(b'RIFF')        # WEBP
-        )
-        if not is_binary_header:
-            try:
-                decoded = base64.b64decode(raw_bytes.strip())
-                if decoded.startswith(b'\xff\xd8') or decoded.startswith(b'\x89PNG') or decoded.startswith(b'GIF8'):
-                    return decoded
-            except Exception:
-                pass
+        if isinstance(raw_input, str):
+            if "base64," in raw_input:
+                raw_input = raw_input.split("base64,", 1)[1]
+            raw_input = raw_input.strip()
+            return base64.b64decode(raw_input)
+
+        if isinstance(raw_input, bytes):
+            text_sample = raw_input[:120].decode('utf-8', errors='ignore').strip()
+            if "base64," in text_sample or text_sample.startswith("data:image/"):
+                if b"base64," in raw_input:
+                    _, base64_str = raw_input.split(b"base64,", 1)
+                else:
+                    base64_str = raw_input
+                base64_str = base64_str.strip()
+                return base64.b64decode(base64_str)
+                
+            is_binary_header = (
+                raw_input.startswith(b'\xff\xd8') or  # JPEG
+                raw_input.startswith(b'\x89PNG') or  # PNG
+                raw_input.startswith(b'GIF8') or     # GIF
+                raw_input.startswith(b'RIFF')        # WEBP
+            )
+            if not is_binary_header:
+                try:
+                    decoded = base64.b64decode(raw_input.strip())
+                    if decoded.startswith(b'\xff\xd8') or decoded.startswith(b'\x89PNG') or decoded.startswith(b'GIF8'):
+                        return decoded
+                except Exception:
+                    pass
+            return raw_input
     except Exception as e:
         print(f"⚠️ Aviso na higienização de bytes da imagem: {e}")
+        
+    return raw_input if isinstance(raw_input, bytes) else b""
+
         
     return raw_bytes
 
