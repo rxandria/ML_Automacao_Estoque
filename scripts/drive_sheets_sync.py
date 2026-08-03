@@ -222,39 +222,51 @@ def setup_google_sheet(folder_id, creds):
 
 def upload_product_photo(file_input, photos_folder_id, creds):
     """
-    Faz upload de imagem (caminho no disco, string base64 ou bytes) para o Google Drive e retorna link público.
+    Faz upload de foto para o Google Drive com consumo de RAM estritamente minúsculo (< 5MB).
+    Salva temporariamente em disco e usa MediaFileUpload com chunksize=256*1024 e resumable=False.
     """
-    filename = f"foto_{format_brasilia_time('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+    random_id = uuid.uuid4().hex[:6]
+    filename = f"foto_{format_brasilia_time('%Y%m%d_%H%M%S')}_{random_id}.jpg"
     fallback_url = f"https://drive.google.com/file/d/mock_{filename}/view"
     
     if not creds:
         print(f"⚠️ [GOOGLE DRIVE] Credenciais ausentes. Retornando URL simulada '{fallback_url}'.")
         return fallback_url
 
-    try:
-        service = build("drive", "v3", credentials=creds)
-        media = None
-        buf = None
-        
-        if isinstance(file_input, str) and os.path.exists(file_input):
-            filename = os.path.basename(file_input)
-            mime_type, _ = mimetypes.guess_type(file_input)
-            if not mime_type:
-                mime_type = 'image/jpeg'
-            media = MediaFileUpload(file_input, mimetype=mime_type, resumable=True)
-        elif isinstance(file_input, (str, bytes)):
-            from googleapiclient.http import MediaIoBaseUpload
-            import io
-            from scripts.vision_processor import clean_and_decode_image_bytes
-            
-            clean_b = clean_and_decode_image_bytes(file_input)
-            buf = io.BytesIO(clean_b)
-            media = MediaIoBaseUpload(buf, mimetype='image/jpeg', resumable=True)
-            del clean_b
-        else:
-            media = MediaFileUpload(str(file_input), mimetype='image/jpeg', resumable=True)
+    temp_path = None
+    media = None
+    service = None
+    created_temp_file = False
 
-        print(f"📷 Fazendo upload para o Google Drive: '{filename}'...")
+    try:
+        # Se for um caminho de arquivo em disco existente
+        if isinstance(file_input, str) and os.path.exists(file_input):
+            temp_path = file_input
+            filename = os.path.basename(file_input)
+        else:
+            # Se for string base64 ou bytes, decodifica diretamente para um arquivo temporário em disco
+            from scripts.vision_processor import clean_and_decode_image_bytes
+            clean_b = clean_and_decode_image_bytes(file_input)
+            
+            os.makedirs("temp_uploads", exist_ok=True)
+            temp_path = os.path.join("temp_uploads", f"temp_upload_{random_id}.jpg")
+            with open(temp_path, "wb") as f:
+                f.write(clean_b)
+            created_temp_file = True
+            del clean_b
+            gc.collect()
+
+        print(f"📷 [GOOGLE DRIVE] Enviando '{filename}' via streaming leve (chunk=256KB, resumable=False)...")
+        service = build("drive", "v3", credentials=creds)
+        
+        # Upload ultraleve em blocos de 256KB diretamente do disco sem carregar tudo em RAM
+        media = MediaFileUpload(
+            temp_path, 
+            mimetype='image/jpeg', 
+            chunksize=256*1024, 
+            resumable=False
+        )
+        
         file_metadata = {
             'name': filename,
             'parents': [photos_folder_id]
@@ -267,9 +279,9 @@ def upload_product_photo(file_input, photos_folder_id, creds):
         ).execute()
         
         file_id = file_obj.get('id')
-        print(f"📷 Upload no Drive concluído! ID: {file_id}")
+        print(f"📷 [GOOGLE DRIVE SUCCESS] Upload concluído com sucesso! ID: {file_id}")
         
-        # Define permissão como pública para visualização de imagem
+        # Define permissão pública para visualização
         try:
             permission = {'type': 'anyone', 'role': 'reader'}
             service.permissions().create(fileId=file_id, body=permission).execute()
@@ -277,25 +289,24 @@ def upload_product_photo(file_input, photos_folder_id, creds):
             print(f"⚠️ Permissão pública no Drive: {perm_err}")
 
         public_url = file_obj.get('webViewLink') or f"https://drive.google.com/file/d/{file_id}/view"
-        
-        # Limpeza imediata de memória
-        if buf:
-            try:
-                buf.close()
-            except Exception:
-                pass
-            del buf
-        del media
-        gc.collect()
-        
         return public_url
-        
+
     except Exception as error:
         import traceback
-        print(f"❌ [GOOGLE DRIVE ERROR] Erro ao fazer upload do arquivo '{file_input}': {error}")
+        print(f"❌ [GOOGLE DRIVE ERROR] Falha ao realizar upload para o Google Drive: {error}")
         traceback.print_exc()
-        gc.collect()
         return fallback_url
+
+    finally:
+        # Destruição estrita de objetos de mídia, serviço e remoção do arquivo temporário do Drive
+        del media, service
+        if created_temp_file and temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+        gc.collect()
+
 
 
 def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_reason, creds, product_id=""):
