@@ -592,6 +592,8 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 parts = body.split(boundary)
                 saved_paths = []
                 
+                from scripts.vision_processor import clean_and_decode_image_bytes, analyze_product_image
+
                 for part in parts:
                     if b'filename="' in part:
                         headers_part, file_content = part.split(b'\r\n\r\n', 1)
@@ -603,6 +605,10 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                             
                             os.makedirs("temp_uploads", exist_ok=True)
                             file_path = os.path.join("temp_uploads", filename)
+                            
+                            # Higieniza e decodifica bytes base64 / Data URL caso o canvas do celular tenha enviado em formato codificado
+                            file_content = clean_and_decode_image_bytes(file_content)
+                            
                             with open(file_path, 'wb') as f:
                                 f.write(file_content)
                             saved_paths.append(file_path)
@@ -616,7 +622,6 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     return
                 
                 # 1. Executa a análise local da imagem principal de forma síncrona com import sob demanda
-                from scripts.vision_processor import analyze_product_image
                 main_image = saved_paths[0]
                 product_data = analyze_product_image(main_image)
                 requires_review = product_data.get("requires_manual_review", False)
@@ -628,7 +633,9 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     try:
                         run_pipeline(saved_paths, dry_run=True)
                     except Exception as err:
+                        import traceback
                         print(f"❌ Erro no pipeline assíncrono: {err}")
+                        traceback.print_exc()
                     finally:
                         gc.collect()
                 
@@ -645,11 +652,32 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(result).encode('utf-8'))
                 
             except Exception as e:
+                import traceback
+                print(f"❌ [UPLOAD HANDLER ERROR] Falha no endpoint /api/upload: {e}")
+                traceback.print_exc()
                 gc.collect()
-                self.send_cors_response(500)
-                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+                
+                # Resiliência: em caso de exceção de parse, retorna resposta 200 de fallback marcada para revisão manual
+                fallback_product = {
+                    "titulo": "Produto Enviado (Revisar Cadastro)",
+                    "categoria": "Outros",
+                    "preco_sugerido": 50.00,
+                    "estoque": 1,
+                    "condicao": "used",
+                    "descricao": f"Erro de upload/processamento: {str(e)}. Por favor, preencha manualmente.",
+                    "confidence_score": "0.0%",
+                    "requires_manual_review": True,
+                    "review_reason": f"Falha ao processar upload ({str(e)})."
+                }
+                self.send_cors_response(200)
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "requires_manual_review": True,
+                    "product_data": fallback_product
+                }).encode('utf-8'))
             finally:
                 gc.collect()
+
 
         # API: Salvar modificações da Revisão Manual e Aprovar Publicação
         elif path == '/api/review':

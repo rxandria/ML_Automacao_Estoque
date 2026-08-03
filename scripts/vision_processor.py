@@ -5,6 +5,50 @@ Vision Processor script using Pillow and NumPy.
 import os
 import re
 import gc
+import base64
+import traceback
+
+
+def clean_and_decode_image_bytes(raw_bytes):
+    """
+    Limpa e decodifica bytes de imagem recebidos.
+    Se contiver cabeçalhos Data URL (ex: data:image/jpeg;base64,...) ou string em base64,
+    remove o cabeçalho e decodifica para bytes binários puros de imagem.
+    """
+    if not raw_bytes:
+        return b""
+        
+    try:
+        # Tenta interpretar o cabeçalho como texto para identificar prefixos Data URL
+        text_sample = raw_bytes[:120].decode('utf-8', errors='ignore').strip()
+        
+        if "base64," in text_sample or text_sample.startswith("data:image/"):
+            if b"base64," in raw_bytes:
+                _, base64_str = raw_bytes.split(b"base64,", 1)
+            else:
+                base64_str = raw_bytes
+            
+            base64_str = base64_str.strip()
+            return base64.b64decode(base64_str)
+            
+        # Se for ASCII base64 puro (sem números mágicos de JPEG/PNG/GIF/WEBP)
+        is_binary_header = (
+            raw_bytes.startswith(b'\xff\xd8') or  # JPEG
+            raw_bytes.startswith(b'\x89PNG') or  # PNG
+            raw_bytes.startswith(b'GIF8') or     # GIF
+            raw_bytes.startswith(b'RIFF')        # WEBP
+        )
+        if not is_binary_header:
+            try:
+                decoded = base64.b64decode(raw_bytes.strip())
+                if decoded.startswith(b'\xff\xd8') or decoded.startswith(b'\x89PNG') or decoded.startswith(b'GIF8'):
+                    return decoded
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"⚠️ Aviso na higienização de bytes da imagem: {e}")
+        
+    return raw_bytes
 
 
 def sanitize_title(title):
@@ -14,16 +58,13 @@ def sanitize_title(title):
     """
     if not title:
         return ""
-    # Mantém apenas letras, números, espaços, hifens e acentuação em português
     sanitized = re.sub(r'[^a-zA-Z0-9 áéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ\-]', '', title)
-    # Remove múltiplos espaços
     sanitized = re.sub(r'\s+', ' ', sanitized).strip()
-    # Converte para Title Case (primeira letra de cada palavra em maiúscula)
     sanitized = sanitized.title()
-    # Limita o tamanho ao máximo de 60 caracteres do Mercado Livre
     if len(sanitized) > 60:
         sanitized = sanitized[:57].strip() + "..."
     return sanitized
+
 
 def optimize_image_for_ml(image_path, output_path, remove_bg=False):
     """
@@ -38,6 +79,18 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
     try:
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Imagem original não encontrada: {image_path}")
+
+        # Sanitização de bytes de imagem caso o arquivo tenha chegado com cabeçalho Data URL ou Base64 ASCII
+        try:
+            with open(image_path, "rb") as f:
+                raw_content = f.read()
+            clean_bytes = clean_and_decode_image_bytes(raw_content)
+            if clean_bytes != raw_content:
+                print(f"🧹 Higienizando bytes de imagem Base64/DataURL em: {image_path}")
+                with open(image_path, "wb") as f:
+                    f.write(clean_bytes)
+        except Exception as clean_err:
+            print(f"⚠️ Erro ao higienizar imagem antes da otimização: {clean_err}")
 
         print(f"📷 Otimizando imagem: {image_path} (remove_bg={remove_bg})...")
         img = Image.open(image_path)
@@ -55,7 +108,6 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
                 else:
                     img_for_ia = img
                 
-                # Configura timeout de 3 segundos para o processamento de IA (somente na thread principal)
                 import signal
                 class TimeoutException(Exception): pass
                 def handler(signum, frame): raise TimeoutException("Timeout rembg")
@@ -88,7 +140,6 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
             new_img = Image.new("RGB", (target_size, target_size), (255, 255, 255))
             paste_x = (target_size - new_width) // 2
             paste_y = (target_size - new_height) // 2
-            # Usa img_resized como máscara para colar sobre o fundo branco
             new_img.paste(img_resized, (paste_x, paste_y), img_resized)
         else:
             img = img.convert('RGB')
@@ -104,7 +155,6 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
             paste_y = (target_size - new_height) // 2
             new_img.paste(img_resized, (paste_x, paste_y))
             
-        # Garante que o diretório de destino existe
         output_dir = os.path.dirname(output_path)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -121,6 +171,7 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
         
     except Exception as e:
         print(f"❌ Erro ao otimizar a imagem: {e}")
+        traceback.print_exc()
         gc.collect()
         raise e
     finally:
@@ -129,15 +180,29 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
 def analyze_product_image(image_path):
     """
     Extrai dados do produto a partir da imagem com regras de validação e resiliência:
+    - Sanitiza bytes base64/DataURL.
     - Verifica tamanho mínimo (500x500px).
     - Avalia nitidez/contraste usando desvio padrão de tons de cinza.
-    - Se falhar nas validações, marca requires_manual_review = True e gera review_reason.
+    - Em caso de falha na IA/Gemini, adiciona fallback e marca para revisão manual.
     """
     from PIL import Image
     import numpy as np
     
     print(f"🧠 Analisando imagem {image_path}...")
     try:
+        # Sanitização de bytes de imagem caso o arquivo tenha chegado com cabeçalho Data URL ou Base64 ASCII
+        if os.path.exists(image_path):
+            try:
+                with open(image_path, "rb") as f:
+                    raw_content = f.read()
+                clean_bytes = clean_and_decode_image_bytes(raw_content)
+                if clean_bytes != raw_content:
+                    print(f"🧹 Higienizando bytes de imagem Base64/DataURL em: {image_path}")
+                    with open(image_path, "wb") as f:
+                        f.write(clean_bytes)
+            except Exception as clean_err:
+                print(f"⚠️ Erro ao higienizar imagem antes da análise: {clean_err}")
+
         img = Image.open(image_path)
         width, height = img.size
         
@@ -145,7 +210,6 @@ def analyze_product_image(image_path):
         gray_img = img.convert('L')
         std_dev = float(np.std(np.array(gray_img)))
 
-        
         confidence_score = 95.0
         requires_manual_review = False
         review_reason = ""
@@ -170,7 +234,6 @@ def analyze_product_image(image_path):
         try:
             api_key = os.environ.get("GEMINI_API_KEY")
             
-            # Tenta carregar do arquivo .env no diretório de trabalho atual ou na raiz do projeto
             if not api_key:
                 env_paths = [
                     ".env",
@@ -198,11 +261,13 @@ def analyze_product_image(image_path):
                 
             print("🔗 Conectando à API do Gemini Visão para análise real...")
             
-            # Prepara a imagem em base64
+            # Prepara a imagem em base64 limpa
             buffered = io.BytesIO()
             img_to_send = img.convert("RGB")
-            img_to_send.save(buffered, format="JPEG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            img_to_send.save(buffered, format="JPEG", quality=85)
+            raw_img_bytes = buffered.getvalue()
+            img_base64 = base64.b64encode(raw_img_bytes).decode('utf-8')
+            img_base64 = re.sub(r'^data:image/[^;]+;base64,', '', img_base64).strip()
             
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
             
@@ -249,7 +314,6 @@ def analyze_product_image(image_path):
             except (KeyError, IndexError) as err:
                 raise RuntimeError(f"Resposta inválida da API do Gemini: {resp_json}") from err
                 
-            # Limpa possíveis formatações markdown markdown ```json ... ```
             if raw_text.startswith("```"):
                 lines = raw_text.splitlines()
                 if lines[0].startswith("```"):
@@ -272,11 +336,12 @@ def analyze_product_image(image_path):
             
         except Exception as e:
             print(f"⚠️ Erro ao chamar a API do Gemini Visão: {e}")
+            traceback.print_exc()
             requires_manual_review = True
             review_reason += f"Falha na API do Gemini: {str(e)}. "
             confidence_score = 0.0
             
-            filename = os.path.basename(image_path).lower()
+            filename = os.path.basename(image_path).lower() if image_path else ""
             if "fone" in filename:
                 titulo = "Fone de Ouvido (Revisar Modelo)"
                 categoria = "Eletrônicos, Áudio e Vídeo > Áudio > Fones de Ouvido"
@@ -294,10 +359,8 @@ def analyze_product_image(image_path):
                 descricao = f"Erro na análise automática: {str(e)}. Por favor, preencha manualmente os dados."
             condicao = "used"
         
-        # Higieniza o título
         sanitized_title = sanitize_title(titulo)
         
-        # Validações de campos do produto
         if not sanitized_title or len(sanitized_title) < 5 or "..." in sanitized_title:
             requires_manual_review = True
             review_reason += "Título inválido ou truncado. "
@@ -313,7 +376,6 @@ def analyze_product_image(image_path):
             review_reason += f"Preço inválido ({preco}). "
             confidence_score -= 20
 
-        # Garante score no range 0-100
         confidence_score = max(0.0, min(100.0, confidence_score))
         
         return {
@@ -329,9 +391,25 @@ def analyze_product_image(image_path):
         }
         
     except Exception as e:
-        print(f"❌ Erro ao analisar imagem: {e}")
+        print(f"❌ [VISION PROCESSOR EXCEPTION] Erro crítico ao analisar imagem '{image_path}': {e}")
+        traceback.print_exc()
         gc.collect()
-        raise e
+        
+        filename = os.path.basename(image_path).lower() if image_path else "produto"
+        raw_name = os.path.splitext(filename)[0]
+        
+        return {
+            "titulo": sanitize_title(f"Produto {raw_name.replace('_', ' ').title()} (Revisar Foto)"),
+            "categoria": "Outros",
+            "preco_sugerido": 50.00,
+            "estoque": 1,
+            "condicao": "used",
+            "descricao": f"Erro de leitura na imagem: {str(e)}. Necessário preenchimento manual.",
+            "confidence_score": "0.0%",
+            "requires_manual_review": True,
+            "review_reason": f"Falha de leitura/processamento da imagem ({str(e)}). Necessária revisão manual."
+        }
+
     finally:
         try:
             img.close()
