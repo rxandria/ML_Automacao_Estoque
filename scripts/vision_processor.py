@@ -308,16 +308,17 @@ def analyze_product_image(image_path):
             
             headers = {"Content-Type": "application/json"}
 
-            # Lista de modelos suportados para fallback em ordem de prioridade
+            # Lista de modelos priorizados para a API REST da versão atual
             candidate_models = [
-                "gemini-2.0-flash",
-                "gemini-1.5-flash-latest",
-                "gemini-1.5-flash",
-                "gemini-1.5-pro",
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+                "gemini-flash-latest",
+                "gemini-3.5-flash-lite",
                 "gemini-2.5-flash"
             ]
 
             response = None
+            successful_model = None
             last_error = ""
 
             for model_name in candidate_models:
@@ -328,6 +329,7 @@ def analyze_product_image(image_path):
                     res = requests.post(gemini_url, json=payload, headers=headers, timeout=15)
                     if res.status_code == 200:
                         response = res
+                        successful_model = model_name
                         print(f"✅ Modelo '{model_name}' respondeu com sucesso (200 OK)!")
                         break
                     elif res.status_code == 404:
@@ -339,17 +341,34 @@ def analyze_product_image(image_path):
                 except Exception as req_err:
                     print(f"⚠️ Erro ao requisitar modelo '{model_name}': {req_err}")
                     last_error = f"Erro de requisição ({model_name}): {req_err}"
+
+            # Rota Genérica de Fallback se todos os modelos nomeados retornarem erro ou 404
+            if not response or response.status_code != 200:
+                print("⚠️ Todos os modelos da lista principal retornaram erro. Tentando rota genérica de fallback 'gemini-flash-latest'...")
+                fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={api_key}"
+                try:
+                    res = requests.post(fallback_url, json=payload, headers=headers, timeout=15)
+                    if res.status_code == 200:
+                        response = res
+                        successful_model = "gemini-flash-latest (fallback genérico)"
+                        print("✅ Rota genérica de fallback 'gemini-flash-latest' respondeu com sucesso (200 OK)!")
+                    else:
+                        last_error = f"HTTP {res.status_code} (gemini-flash-latest fallback): {res.text}"
+                except Exception as fallback_err:
+                    last_error = f"Erro na rota de fallback ({fallback_err})"
             
             # Limpa imediatamente o buffer base64 da memória após o envio das requisições
             del img_base64, payload
             gc.collect()
 
             if not response or response.status_code != 200:
-                raise RuntimeError(f"Erro ao chamar API do Gemini (Modelos testados: {candidate_models}): {last_error}")
+                raise RuntimeError(f"Erro ao chamar API do Gemini (Modelos testados: {candidate_models} + fallback): {last_error}")
                 
+            print(f"🎉 Análise concluída com sucesso usando o modelo: '{successful_model}'")
             resp_json = response.json()
             del response
             gc.collect()
+
 
 
             try:
