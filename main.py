@@ -8,10 +8,12 @@ import sys
 import json
 import re
 import datetime
+import gc
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from scripts.vision_processor import optimize_image_for_ml, analyze_product_image, sanitize_title
+from scripts.vision_processor import sanitize_title
+
 from scripts.drive_sheets_sync import (
     authenticate, 
     setup_drive_structure, 
@@ -40,6 +42,8 @@ SESSIONS = {}
 PARENT_FOLDER_ID = "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
 def run_pipeline(image_paths, dry_run=True):
+    from scripts.vision_processor import optimize_image_for_ml, analyze_product_image
+
     # Aceita string única ou lista de caminhos
     if isinstance(image_paths, str):
         image_paths = [image_paths]
@@ -63,6 +67,7 @@ def run_pipeline(image_paths, dry_run=True):
         print("\n🧠 Passo 3: Analisando imagem principal do produto...")
         main_image = image_paths[0]
         product_data = analyze_product_image(main_image)
+        gc.collect()
         
         print(f"   Confiança da IA: {product_data.get('confidence_score')}")
         print(f"   Revisão Manual Necessária: {product_data.get('requires_manual_review')}")
@@ -81,6 +86,7 @@ def run_pipeline(image_paths, dry_run=True):
                 review_reason=reason,
                 creds=creds
             )
+            gc.collect()
             print("\n❌ Pipeline interrompido: O produto necessita de revisão humana.")
             return {
                 "success": False,
@@ -113,6 +119,7 @@ def run_pipeline(image_paths, dry_run=True):
             print(f"🚀 Passo 5.{idx+1}: Enviando foto {idx+1} para o Google Drive...")
             url = upload_product_photo(optimized_path, photos_folder_id, creds)
             public_urls.append(url)
+            gc.collect()
 
         # Junta todas as URLs separadas por vírgula para salvar na Planilha
         concatenated_urls = ", ".join(public_urls)
@@ -178,11 +185,15 @@ def run_pipeline(image_paths, dry_run=True):
         
     except Exception as e:
         print(f"\n❌ Falha grave na execução do pipeline: {e}")
+        gc.collect()
         return {
             "success": False,
             "requires_manual_review": False,
             "error": str(e)
         }
+    finally:
+        gc.collect()
+
 
 def update_product_in_sheet(sheet_id, row_num, product_data, status, review_needed, review_reason, creds, product_id=""):
     """
@@ -226,7 +237,12 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
 # --- Servidor Local HTTP ---
 
 class DashboardHTTPHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        # Log otimizado e leve para evitar alocações desnecessárias em repouso
+        sys.stdout.write(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {format % args}\n")
+
     def get_authenticated_user(self):
+
         token = None
         
         # 1. Tenta carregar dos cookies
@@ -475,25 +491,30 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                                 f.write(file_content)
                             saved_paths.append(file_path)
                 
+                del body
+                gc.collect()
+
                 if not saved_paths:
                     self.send_cors_response(400)
                     self.wfile.write(json.dumps({"error": "Bad Request: No files uploaded"}).encode('utf-8'))
                     return
                 
-                # 1. Executa a análise local da imagem principal de forma síncrona (rápida, <0.05s)
-                # para verificar se exige revisão manual imediata.
+                # 1. Executa a análise local da imagem principal de forma síncrona com import sob demanda
+                from scripts.vision_processor import analyze_product_image
                 main_image = saved_paths[0]
                 product_data = analyze_product_image(main_image)
                 requires_review = product_data.get("requires_manual_review", False)
-                
+                gc.collect()
+
                 # 2. Executa o restante do pipeline (otimização, upload ao Drive, Sheets e ML) em background
-                # para evitar o timeout de rede/localtunnel.
                 import threading
                 def async_pipeline_worker():
                     try:
                         run_pipeline(saved_paths, dry_run=True)
                     except Exception as err:
                         print(f"❌ Erro no pipeline assíncrono: {err}")
+                    finally:
+                        gc.collect()
                 
                 threading.Thread(target=async_pipeline_worker, daemon=True).start()
                 
@@ -508,15 +529,19 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(result).encode('utf-8'))
                 
             except Exception as e:
+                gc.collect()
                 self.send_cors_response(500)
                 self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
- 
+            finally:
+                gc.collect()
+
         # API: Salvar modificações da Revisão Manual e Aprovar Publicação
         elif path == '/api/review':
             try:
                 content_length = int(self.headers.get('content-length', 0))
                 body = self.rfile.read(content_length)
                 data = json.loads(body.decode('utf-8'))
+                del body
                 
                 row_num = int(data.get("index")) + 2
                 
@@ -541,7 +566,8 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 if not os.path.exists(original_path):
                     original_path = "temp_uploads/test_product.jpg"
                 
-                # 1. Otimização da imagem com remoção de fundo (por ser a foto principal revisada)
+                # 1. Otimização da imagem com remoção de fundo (import sob demanda)
+                from scripts.vision_processor import optimize_image_for_ml
                 optimized_path = os.path.join("temp_uploads", "review_optimized.jpg")
                 optimize_image_for_ml(original_path, optimized_path, remove_bg=True)
                 
@@ -571,12 +597,17 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 if os.path.exists(optimized_path):
                     os.remove(optimized_path)
                 
+                gc.collect()
                 self.send_cors_response(200)
                 self.wfile.write(json.dumps({"success": True, "status": status}).encode('utf-8'))
                 
             except Exception as e:
+                gc.collect()
                 self.send_cors_response(500)
                 self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            finally:
+                gc.collect()
+
         else:
             self.send_cors_response(404, 'text/plain')
             self.wfile.write(b'Not Found')
@@ -665,11 +696,16 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
+class OptimizedThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 5
+
 def run_server(port=8000):
     server_address = ('0.0.0.0', port)
-    httpd = ThreadingHTTPServer(server_address, DashboardHTTPHandler)
+    httpd = OptimizedThreadingHTTPServer(server_address, DashboardHTTPHandler)
     local_ip = get_local_ip()
-    print(f"\n🌐 Servidor Web iniciado com sucesso na porta {port}!")
+    print(f"\n🌐 Servidor Web otimizado para Render (512MB RAM) iniciado na porta {port}!")
     print(f"👉 Acesso Local: http://localhost:{port}")
     print(f"📱 Acesso na Rede (Celular/Wi-Fi): http://{local_ip}:{port}")
     try:
@@ -684,18 +720,20 @@ if __name__ == "__main__":
     test_ok_path = "temp_uploads/fone_bluetooth.jpg"
     test_fail_path = "temp_uploads/test_revisar.jpg"
     
-    from PIL import Image
-    if not os.path.exists(test_ok_path):
+    if not os.path.exists(test_ok_path) or not os.path.exists(test_fail_path):
+        from PIL import Image
         import numpy as np
-        arr = np.random.randint(0, 255, (800, 800, 3), dtype=np.uint8)
-        img = Image.fromarray(arr)
-        img.save(test_ok_path)
-        print(f"📷 Imagem de teste válida criada em: {test_ok_path}")
-        
-    if not os.path.exists(test_fail_path):
-        img = Image.new('RGB', (100, 100), color='grey')
-        img.save(test_fail_path)
-        print(f"📷 Imagem de teste inválida criada em: {test_fail_path}")
+        if not os.path.exists(test_ok_path):
+            arr = np.random.randint(0, 255, (800, 800, 3), dtype=np.uint8)
+            img = Image.fromarray(arr)
+            img.save(test_ok_path)
+            print(f"📷 Imagem de teste válida criada em: {test_ok_path}")
+            
+        if not os.path.exists(test_fail_path):
+            img = Image.new('RGB', (100, 100), color='grey')
+            img.save(test_fail_path)
+            print(f"📷 Imagem de teste inválida criada em: {test_fail_path}")
+        gc.collect()
         
     port = int(os.environ.get("PORT", 8000))
     # Verifica argumentos de terminal
@@ -708,3 +746,4 @@ if __name__ == "__main__":
         run_pipeline([test_fail_path], dry_run=True)
         
         run_server(port)
+

@@ -4,8 +4,8 @@ Vision Processor script using Pillow and NumPy.
 """
 import os
 import re
-import numpy as np
-from PIL import Image
+import gc
+
 
 def sanitize_title(title):
     """
@@ -34,6 +34,7 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
     - Adiciona fundo branco para centralizar a imagem.
     - Salva como JPEG na pasta de destino.
     """
+    from PIL import Image
     try:
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Imagem original não encontrada: {image_path}")
@@ -110,11 +111,20 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
             
         new_img.save(output_path, "JPEG", quality=90)
         print(f"📷 Imagem otimizada com sucesso em: {output_path} (1200x1200px)")
+        
+        try:
+            img.close()
+            new_img.close()
+        except Exception:
+            pass
         return output_path
         
     except Exception as e:
         print(f"❌ Erro ao otimizar a imagem: {e}")
+        gc.collect()
         raise e
+    finally:
+        gc.collect()
 
 def analyze_product_image(image_path):
     """
@@ -123,6 +133,9 @@ def analyze_product_image(image_path):
     - Avalia nitidez/contraste usando desvio padrão de tons de cinza.
     - Se falhar nas validações, marca requires_manual_review = True e gera review_reason.
     """
+    from PIL import Image
+    import numpy as np
+    
     print(f"🧠 Analisando imagem {image_path}...")
     try:
         img = Image.open(image_path)
@@ -131,6 +144,7 @@ def analyze_product_image(image_path):
         # Calcula nitidez/contraste usando o desvio padrão de tons de cinza do NumPy
         gray_img = img.convert('L')
         std_dev = float(np.std(np.array(gray_img)))
+
         
         confidence_score = 95.0
         requires_manual_review = False
@@ -316,7 +330,15 @@ def analyze_product_image(image_path):
         
     except Exception as e:
         print(f"❌ Erro ao analisar imagem: {e}")
+        gc.collect()
         raise e
+    finally:
+        try:
+            img.close()
+        except Exception:
+            pass
+        gc.collect()
+
 
 if __name__ == "__main__":
     print("Testando higienização de títulos:")
