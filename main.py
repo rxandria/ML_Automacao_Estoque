@@ -364,20 +364,6 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         
-        # Servir a página de Login (pública)
-        if path == '/login.html':
-            self.send_cors_response(200, 'text/html; charset=utf-8')
-            with open('dashboard/login.html', 'rb') as f:
-                self.wfile.write(f.read())
-            return
-
-        # Servir a página principal (evita redirecionamento 302 em loop)
-        if path in ('/', '/index.html'):
-            self.send_cors_response(200, 'text/html; charset=utf-8')
-            with open('dashboard/index.html', 'rb') as f:
-                self.wfile.write(f.read())
-            return
-
         # Servir Service Worker (público)
         if path in ('/sw.js', '/dashboard/sw.js'):
             self.send_cors_response(200, 'application/javascript; charset=utf-8')
@@ -389,8 +375,27 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b'// SW v2 Clean Cache\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))).then(() => self.clients.claim())));')
             return
 
+        # Servir a página de Login (pública)
+        if path == '/login.html':
+            self.send_cors_response(200, 'text/html; charset=utf-8')
+            with open('dashboard/login.html', 'rb') as f:
+                self.wfile.write(f.read())
+            return
+
         # Para APIs e arquivos estáticos restritos, verifica autenticação
         user = self.get_authenticated_user()
+
+        # Servir a página principal ou login (proteção de rota unificada sem redirecionamento HTTP 302)
+        if path in ('/', '/index.html'):
+            self.send_cors_response(200, 'text/html; charset=utf-8')
+            if not user:
+                with open('dashboard/login.html', 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                with open('dashboard/index.html', 'rb') as f:
+                    self.wfile.write(f.read())
+            return
+
 
 
         # Servir os arquivos temporários locais (Imagens de thumbnail)

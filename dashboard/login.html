@@ -277,6 +277,9 @@
     </div>
 
     <script>
+        // Limpeza forçada de cookie no carregamento inicial da página de login
+        document.cookie = "session_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+
         const loginForm = document.getElementById('login-form');
         const usernameInput = document.getElementById('username');
         const passwordInput = document.getElementById('password');
@@ -339,24 +342,7 @@
             navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW login registration skipped:', err));
         }
 
-        // Se houver token salvo, valida com a API antes de redirecionar para evitar loops
-        const token = localStorage.getItem('session_token');
-        if (token) {
-            fetch('/api/products', {
-                headers: { 'Authorization': `Bearer ${token}` }
-            }).then(res => {
-                if (res.ok) {
-                    window.location.href = '/index.html';
-                } else {
-                    localStorage.clear();
-                    sessionStorage.clear();
-                }
-            }).catch(() => {
-                // Em caso de falha de conexão, permanece na tela de login
-            });
-        }
-
-
     </script>
 </body>
 </html>
+
