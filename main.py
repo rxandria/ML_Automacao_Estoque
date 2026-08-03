@@ -34,9 +34,29 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "duotech123")
 USER2_USERNAME = os.environ.get("USER2_USERNAME", "colaborador@duotech.com")
 USER2_PASSWORD = os.environ.get("USER2_PASSWORD", "duotech456")
 
-# Gerenciamento de sessões em memória
-# Mapeia session_token -> {"username": "...", "role": "..."}
-SESSIONS = {}
+# Gerenciamento de sessões com persistência em disco
+SESSIONS_FILE = os.path.join("temp_uploads", "sessions.json")
+
+def load_sessions():
+    sessions = {}
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+                sessions = json.load(f)
+        except Exception as e:
+            print(f"⚠️ Erro ao carregar sessões salvas em disco: {e}")
+    return sessions
+
+def save_sessions(sessions):
+    try:
+        os.makedirs("temp_uploads", exist_ok=True)
+        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sessions, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Erro ao salvar sessões em disco: {e}")
+
+SESSIONS = load_sessions()
+
 
 # ID da pasta principal no Drive
 PARENT_FOLDER_ID = "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
@@ -242,7 +262,6 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
         sys.stdout.write(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {format % args}\n")
 
     def get_authenticated_user(self):
-
         token = None
         
         # 1. Tenta carregar dos cookies
@@ -257,9 +276,22 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
             auth_header = self.headers.get('Authorization')
             if auth_header and auth_header.startswith('Bearer '):
                 token = auth_header.split('Bearer ', 1)[1].strip()
-                
-        if token and token in SESSIONS:
-            return SESSIONS[token]
+
+        # 3. Tenta carregar dos parâmetros da URL
+        if not token:
+            parsed = urlparse(self.path)
+            query_params = parse_qs(parsed.query)
+            if 'token' in query_params:
+                token = query_params['token'][0].strip()
+
+        if token:
+            if token in SESSIONS:
+                return SESSIONS[token]
+            # Tenta recarregar do disco caso as sessões em memória tenham sido limpas
+            fresh_sessions = load_sessions()
+            if token in fresh_sessions:
+                SESSIONS[token] = fresh_sessions[token]
+                return fresh_sessions[token]
             
         return None
 
@@ -285,23 +317,19 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 self.wfile.write(f.read())
             return
 
-        # Para qualquer outro arquivo ou API, verifica a autenticação
-        user = self.get_authenticated_user()
-
-        # Se for a página principal e não estiver autenticado, redireciona para login.html
+        # Servir a página principal (evita redirecionamento 302 em loop)
         if path in ('/', '/index.html'):
-            if not user:
-                self.send_response(302)
-                self.send_header('Location', '/login.html')
-                self.end_headers()
-                return
-            
             self.send_cors_response(200, 'text/html; charset=utf-8')
             with open('dashboard/index.html', 'rb') as f:
                 self.wfile.write(f.read())
-                
+            return
+
+        # Para APIs e arquivos estáticos restritos, verifica autenticação
+        user = self.get_authenticated_user()
+
         # Servir os arquivos temporários locais (Imagens de thumbnail)
-        elif path.startswith('/temp_uploads/'):
+        if path.startswith('/temp_uploads/'):
+
             if not user:
                 self.send_cors_response(401)
                 self.wfile.write(json.dumps({"error": "Unauthorized"}).encode('utf-8'))
@@ -403,12 +431,15 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     session_token = str(uuid.uuid4())
                     SESSIONS[session_token] = {
                         "username": username,
-                        "role": user_role
+                        "role": user_role,
+                        "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
+                    save_sessions(SESSIONS)
                     
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
-                    self.send_header('Set-Cookie', f'session_token={session_token}; Path=/; HttpOnly; SameSite=Lax')
+                    # Cookie válido por 30 dias (2592000 segundos) para manter o login durante testes no Render
+                    self.send_header('Set-Cookie', f'session_token={session_token}; Path=/; Max-Age=2592000; SameSite=Lax')
                     self.send_header('Access-Control-Allow-Origin', '*')
                     self.end_headers()
                     self.wfile.write(json.dumps({
@@ -444,12 +475,14 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     
             if token and token in SESSIONS:
                 del SESSIONS[token]
+                save_sessions(SESSIONS)
                 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
-            self.send_header('Set-Cookie', 'session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax')
+            self.send_header('Set-Cookie', 'session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
+
             self.wfile.write(json.dumps({"success": True}).encode('utf-8'))
             return
 

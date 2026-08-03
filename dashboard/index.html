@@ -1126,31 +1126,54 @@
     <div class="toast-container" id="toast-wrapper"></div>
 
     <script>
-        // Validação imediata de autenticação no carregamento
-        if (!localStorage.getItem('session_token')) {
-            window.location.href = '/login.html';
+        let isRedirectingToLogin = false;
+
+        function showAuthErrorAndRedirect(message = 'Sessão expirada. Por favor, faça login novamente.') {
+            if (isRedirectingToLogin) return;
+            isRedirectingToLogin = true;
+            localStorage.removeItem('session_token');
+            localStorage.removeItem('user_info');
+            if (typeof showToast === 'function') {
+                showToast(message, 'warning');
+            }
+            setTimeout(() => {
+                window.location.href = '/login.html';
+            }, 2000);
         }
 
-        // Interceptador global do fetch para injetar tokens e tratar 401
+        // Validação de autenticação inicial
+        if (!localStorage.getItem('session_token')) {
+            showAuthErrorAndRedirect('Acesso não autorizado. Por favor, faça login.');
+        }
+
+        // Interceptador global do fetch para injetar tokens e tratar 401/403 sem loop
         const originalFetch = window.fetch;
-        window.fetch = async function(url, options = {}) {
+        window.fetch = async function(url, options) {
+            options = options || {};
             options.headers = options.headers || {};
             const token = localStorage.getItem('session_token');
             if (token) {
-                options.headers['Authorization'] = `Bearer ${token}`;
+                if (options.headers instanceof Headers) {
+                    if (!options.headers.has('Authorization')) {
+                        options.headers.set('Authorization', `Bearer ${token}`);
+                    }
+                } else if (typeof options.headers === 'object') {
+                    if (!options.headers['Authorization'] && !options.headers['authorization']) {
+                        options.headers['Authorization'] = `Bearer ${token}`;
+                    }
+                }
             }
             try {
                 const response = await originalFetch(url, options);
-                if (response.status === 401) {
-                    localStorage.removeItem('session_token');
-                    localStorage.removeItem('user_info');
-                    window.location.href = '/login.html';
+                if (response.status === 401 || response.status === 403 || (response.url && response.url.includes('/login.html'))) {
+                    showAuthErrorAndRedirect('Sessão expirada ou não autorizada. Faça login novamente.');
                 }
                 return response;
             } catch (error) {
                 throw error;
             }
         };
+
 
         // DOM Elements
         const dropZone = document.getElementById('drop-zone');
@@ -1559,25 +1582,99 @@
             renderPreviewGrid();
         }
 
-        // Envia todas as fotos selecionadas para a Automação
+        // Compactação de imagens no cliente (largura/altura máxima de 1080px, qualidade JPEG 0.75)
+        async function compressImage(file, maxWidth = 1080, maxHeight = 1080, quality = 0.75) {
+            if (!file || !file.type || !file.type.startsWith('image/')) return file;
+
+            return new Promise((resolve) => {
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+                
+                img.onload = () => {
+                    URL.revokeObjectURL(url);
+                    let width = img.width;
+                    let height = img.height;
+                    
+                    if (width > maxWidth || height > maxHeight) {
+                        if (width / height > maxWidth / maxHeight) {
+                            height = Math.round((height * maxWidth) / width);
+                            width = maxWidth;
+                        } else {
+                            width = Math.round((width * maxHeight) / height);
+                            height = maxHeight;
+                        }
+                    }
+                    
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width;
+                    canvas.height = height;
+                    
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    canvas.toBlob(
+                        (blob) => {
+                            if (!blob) {
+                                resolve(file);
+                                return;
+                            }
+                            const rawName = file.name ? file.name.replace(/\.[^/.]+$/, "") : "photo";
+                            const compressedFile = new File([blob], `${rawName}.jpg`, {
+                                type: 'image/jpeg',
+                                lastModified: Date.now()
+                            });
+                            console.log(`📷 Compactada no cliente: ${file.name} (${(file.size / 1024).toFixed(0)}KB -> ${(compressedFile.size / 1024).toFixed(0)}KB)`);
+                            resolve(compressedFile);
+                        },
+                        'image/jpeg',
+                        quality
+                    );
+                };
+                
+                img.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    resolve(file);
+                };
+                
+                img.src = url;
+            });
+        }
+
+        // Envia todas as fotos selecionadas para a Automação (com compactação prévia)
         btnProcess.addEventListener('click', async () => {
             if (selectedFiles.length === 0) return;
-
-            const formData = new FormData();
-            selectedFiles.forEach((file) => {
-                formData.append('images', file);
-            });
 
             try {
                 btnProcess.disabled = true;
                 loader.style.display = 'block';
-                
+                showToast('Compactando fotos antes do envio...', 'info');
+
+                // 1. Redimensiona/comprime fotos no cliente (max 1080px, qualidade 0.75)
+                const compressedFiles = await Promise.all(
+                    selectedFiles.map(file => compressImage(file, 1080, 1080, 0.75))
+                );
+
+                const formData = new FormData();
+                compressedFiles.forEach((file) => {
+                    formData.append('images', file);
+                });
+
+                showToast('Enviando fotos otimizadas para a automação...', 'info');
+
                 const response = await fetch('/api/upload', {
                     method: 'POST',
                     body: formData
                 });
                 
-                if (!response.ok) throw new Error('Erro no pipeline');
+                if (response.status === 401 || response.status === 403) {
+                    showAuthErrorAndRedirect('Sessão expirada. Faça login novamente.');
+                    return;
+                }
+
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => ({}));
+                    throw new Error(errData.error || 'Erro no pipeline de upload');
+                }
                 
                 const result = await response.json();
                 
@@ -1598,12 +1695,13 @@
                 
             } catch (error) {
                 console.error(error);
-                showToast('Falha crítica no processamento da imagem.', 'danger');
+                showToast('Falha no processamento da imagem: ' + error.message, 'danger');
             } finally {
                 btnProcess.disabled = false;
                 loader.style.display = 'none';
             }
         });
+
 
         // Manual Refresh
         btnRefresh.addEventListener('click', () => {

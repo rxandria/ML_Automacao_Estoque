@@ -325,12 +325,23 @@
             }
         });
 
-        // Se já houver token válido, tenta carregar a página principal
+        // Se houver token salvo, valida com a API antes de redirecionar para evitar loops
         const token = localStorage.getItem('session_token');
         if (token) {
-            // Verifica se o token ainda é válido ou tenta redirecionar para a home
-            window.location.href = '/index.html';
+            fetch('/api/products', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            }).then(res => {
+                if (res.ok) {
+                    window.location.href = '/index.html';
+                } else {
+                    localStorage.removeItem('session_token');
+                    localStorage.removeItem('user_info');
+                }
+            }).catch(() => {
+                // Em caso de falha de conexão, permanece na tela de login
+            });
         }
+
     </script>
 </body>
 </html>
