@@ -337,8 +337,9 @@ def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_r
             insertDataOption="INSERT_ROWS",
             body=body
         ).execute()
-        print("📊 Registro do produto adicionado na Planilha do Google Sheets!")
+        print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso! Registro adicionado na planilha.")
         return True
+
         
     except Exception as e:
         import traceback

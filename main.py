@@ -126,7 +126,7 @@ def cleanup_temp_files(file_paths):
 PARENT_FOLDER_ID = "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
 
-def run_pipeline(image_paths, dry_run=True):
+def run_pipeline(image_paths, dry_run=True, product_id=None):
     from scripts.vision_processor import optimize_image_for_ml, analyze_product_image
 
     # Aceita string única ou lista de caminhos
@@ -138,6 +138,9 @@ def run_pipeline(image_paths, dry_run=True):
     print(f"   Arquivos: {image_paths}")
     print("="*60)
     
+    if not product_id:
+        product_id = f"MLB{uuid.uuid4().hex[:10].upper()}"
+
     try:
         # 1. Autenticação com as APIs do Google
         print("\n🔑 Passo 1: Autenticando com Google APIs...")
@@ -168,6 +171,7 @@ def run_pipeline(image_paths, dry_run=True):
 
         concatenated_urls = ", ".join(public_urls)
         product_data["url_fotos"] = concatenated_urls
+        drive_thumb = public_urls[0] if public_urls else concatenated_urls
 
         # Se necessitar de revisão manual (baixa qualidade, dimensões ou dados inválidos)
         if product_data.get("requires_manual_review"):
@@ -175,34 +179,45 @@ def run_pipeline(image_paths, dry_run=True):
             print(f"\n⚠️ [REVISÃO MANUAL DETECTADA] {reason}")
             
             status = "REVISAO_MANUAL"
-            add_product_to_sheet(
+            sheets_ok = add_product_to_sheet(
                 sheet_id=sheet_id,
                 product_data=product_data,
                 status=status,
                 review_needed=True,
                 review_reason=reason,
-                creds=creds
+                creds=creds,
+                product_id=product_id
             )
+            if sheets_ok:
+                print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso!")
             
-            # Persistência garantida no cache local também para produtos retidos para revisão manual com URLs do Drive
+            # Persistência no cache local reutilizando product_id e adicionando URLs reais do Drive
             local_item = {
                 "row_num": len(LOCAL_PRODUCTS) + 2,
-                "id": f"MLB{uuid.uuid4().hex[:10].upper()}",
+                "id": product_id,
                 "titulo": product_data.get("titulo", "Produto em Revisão"),
                 "categoria": product_data.get("categoria", "Outros"),
                 "preco": product_data.get("preco_sugerido", 50.0),
                 "estoque": product_data.get("estoque", 1),
                 "condicao": product_data.get("condicao", "used"),
-                "url_fotos": concatenated_urls or "/temp_uploads/" + os.path.basename(main_image),
+                "url_fotos": concatenated_urls,
                 "status": status,
                 "review_needed": True,
                 "motivo_revisao": reason,
                 "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
-                "local_thumb": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
+                "local_thumb": drive_thumb,
                 "original_filename": os.path.basename(main_image)
             }
-            LOCAL_PRODUCTS[:] = [p for p in LOCAL_PRODUCTS if p.get("id") != local_item["id"]]
-            LOCAL_PRODUCTS.append(local_item)
+            
+            found = False
+            for idx_p, p in enumerate(LOCAL_PRODUCTS):
+                if str(p.get("id")) == str(product_id):
+                    LOCAL_PRODUCTS[idx_p] = local_item
+                    found = True
+                    break
+            if not found:
+                LOCAL_PRODUCTS.append(local_item)
+
             save_local_products(LOCAL_PRODUCTS)
             gc.collect()
 
@@ -214,114 +229,55 @@ def run_pipeline(image_paths, dry_run=True):
                 "product_data": product_data
             }
 
-
-
-        # 4. Otimização e Upload Sequencial de Imagens
-        print("\n📷 Passo 4: Otimizando e enviando imagens sequencialmente...")
-        public_urls = []
-        optimized_paths = []
-        
-        for idx, img_path in enumerate(image_paths):
-            base_name = os.path.basename(img_path)
-            name, ext = os.path.splitext(base_name)
-            
-            is_main = (idx == 0)
-            suffix = "main_opt" if is_main else f"sub_{idx}_opt"
-            optimized_path = os.path.join("temp_uploads", f"{name}_{suffix}.jpg")
-            
-            # Otimização individual (remove_bg=True apenas para foto principal)
-            optimize_image_for_ml(img_path, optimized_path, remove_bg=is_main)
-            optimized_paths.append(optimized_path)
-            
-            # Upload imediato para o Drive
-            print(f"🚀 Passo 5.{idx+1}: Enviando foto {idx+1} para o Google Drive...")
-            url = upload_product_photo(optimized_path, photos_folder_id, creds)
-            public_urls.append(url)
-            
-            # Exclusão imediata do arquivo otimizado local e coleta de lixo por foto
-            if os.path.exists(optimized_path):
-                try:
-                    os.remove(optimized_path)
-                except Exception:
-                    pass
-            gc.collect()
-
-        # Junta todas as URLs separadas por vírgula para salvar na Planilha
-        concatenated_urls = ", ".join(public_urls)
-        product_data["url_fotos"] = concatenated_urls
-
-        
-        # 6. Integração e Validação do Mercado Livre
-        print("\n🛍️ Passo 6: Validando publicação no Mercado Livre...")
+        # 5. Integração e Validação do Mercado Livre
+        print("\n🛍️ Passo 5: Validando publicação no Mercado Livre...")
         publisher = MLPublisher(access_token="mock_token_abc123")
         
-        if dry_run:
-            result = publisher.publish_item(product_data, public_urls, dry_run=True)
-            status = "HOMOLOGADO (DRY RUN)"
-            ml_id = result.get("id", "")
-            
-            add_product_to_sheet(
-                sheet_id=sheet_id,
-                product_data=product_data,
-                status=status,
-                review_needed=False,
-                review_reason="Validação do payload aprovada com múltiplas fotos (Modo de Simulação).",
-                creds=creds,
-                product_id=ml_id
-            )
-        else:
-            result = publisher.publish_item(product_data, public_urls, dry_run=False)
-            if result.get("status") == "success":
-                status = "PUBLICADO"
-                ml_id = result.get("id", "")
-                add_product_to_sheet(
-                    sheet_id=sheet_id,
-                    product_data=product_data,
-                    status=status,
-                    review_needed=False,
-                    review_reason=f"Publicado com sucesso no ML com {len(public_urls)} fotos. ID: {ml_id}",
-                    creds=creds,
-                    product_id=ml_id
-                )
-            else:
-                status = "ERRO"
-                add_product_to_sheet(
-                    sheet_id=sheet_id,
-                    product_data=product_data,
-                    status=status,
-                    review_needed=True,
-                    review_reason=f"Erro na publicação: {result.get('message', 'Erro desconhecido')}",
-                    creds=creds
-                )
+        result = publisher.publish_item(product_data, public_urls, dry_run=dry_run)
+        status = "HOMOLOGADO (DRY RUN)" if dry_run else ("PUBLICADO" if result.get("status") == "success" else "ERRO")
+        ml_id = result.get("id", product_id)
         
-        # 7. Limpeza dos arquivos locais otimizados temporários
-        print("\n🧹 Passo 7: Limpando arquivos temporários locais...")
-        for opt_path in optimized_paths:
-            if os.path.exists(opt_path):
-                os.remove(opt_path)
-                print(f"   Arquivo temporário removido: {opt_path}")
+        sheets_ok = add_product_to_sheet(
+            sheet_id=sheet_id,
+            product_data=product_data,
+            status=status,
+            review_needed=False,
+            review_reason="Validação do payload aprovada com múltiplas fotos.",
+            creds=creds,
+            product_id=ml_id
+        )
+        if sheets_ok:
+            print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso!")
 
-        # Registra no armazenamento local de produtos para garantir exibição no dashboard mesmo sem Google APIs
+        # Registra no armazenamento local com URLs reais do Google Drive
         local_item = {
             "row_num": len(LOCAL_PRODUCTS) + 2,
-            "id": ml_id or f"MLB{uuid.uuid4().hex[:10].upper()}",
+            "id": ml_id,
             "titulo": product_data.get("titulo", ""),
             "categoria": product_data.get("categoria", ""),
             "preco": product_data.get("preco_sugerido", 0.0),
             "estoque": product_data.get("estoque", 1),
             "condicao": product_data.get("condicao", "new"),
-            "url_fotos": product_data.get("url_fotos", ""),
+            "url_fotos": concatenated_urls,
             "status": status,
-            "review_needed": product_data.get("requires_manual_review", False),
+            "review_needed": False,
             "motivo_revisao": product_data.get("review_reason", ""),
             "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
-
-            "local_thumb": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
+            "local_thumb": drive_thumb,
             "original_filename": os.path.basename(main_image)
         }
-        LOCAL_PRODUCTS[:] = [p for p in LOCAL_PRODUCTS if p.get("id") != local_item["id"]]
-        LOCAL_PRODUCTS.append(local_item)
+        
+        found = False
+        for idx_p, p in enumerate(LOCAL_PRODUCTS):
+            if str(p.get("id")) == str(product_id) or str(p.get("id")) == str(ml_id):
+                LOCAL_PRODUCTS[idx_p] = local_item
+                found = True
+                break
+        if not found:
+            LOCAL_PRODUCTS.append(local_item)
+
         save_local_products(LOCAL_PRODUCTS)
+        gc.collect()
             
         print(f"\n🎉 PIPELINE CONCLUÍDO COM SUCESSO! Status: {status}")
         return {
@@ -330,6 +286,7 @@ def run_pipeline(image_paths, dry_run=True):
             "status": status,
             "product_data": product_data
         }
+
         
     except Exception as e:
         import traceback
