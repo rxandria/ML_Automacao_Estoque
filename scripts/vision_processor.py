@@ -269,6 +269,12 @@ def analyze_product_image(image_path):
             img_base64 = base64.b64encode(raw_img_bytes).decode('utf-8')
             img_base64 = re.sub(r'^data:image/[^;]+;base64,', '', img_base64).strip()
             
+            # Fecha a imagem convertida auxiliar e limpa o buffer
+            img_to_send.close()
+            buffered.close()
+            del raw_img_bytes, img_to_send, buffered
+            gc.collect()
+
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
             
             prompt = (
@@ -305,10 +311,17 @@ def analyze_product_image(image_path):
             headers = {"Content-Type": "application/json"}
             response = requests.post(gemini_url, json=payload, headers=headers, timeout=15)
             
+            # Limpa imediatamente o buffer base64 da memória após o envio da requisição
+            del img_base64, payload
+            gc.collect()
+
             if response.status_code != 200:
                 raise RuntimeError(f"Erro ao chamar API do Gemini ({response.status_code}): {response.text}")
                 
             resp_json = response.json()
+            del response
+            gc.collect()
+
             try:
                 raw_text = resp_json['candidates'][0]['content']['parts'][0]['text'].strip()
             except (KeyError, IndexError) as err:
@@ -340,6 +353,7 @@ def analyze_product_image(image_path):
             requires_manual_review = True
             review_reason += f"Falha na API do Gemini: {str(e)}. "
             confidence_score = 0.0
+
             
             filename = os.path.basename(image_path).lower() if image_path else ""
             if "fone" in filename:

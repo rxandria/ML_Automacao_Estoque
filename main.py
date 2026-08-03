@@ -79,10 +79,32 @@ def save_local_products(products):
 
 LOCAL_PRODUCTS = load_local_products()
 
+def cleanup_temp_files(file_paths):
+    """
+    Exclui arquivos temporários de upload da pasta temp_uploads/ se existirem,
+    preservando apenas fixtures e arquivos de estado essenciais.
+    """
+    protected_files = {
+        "test_product.jpg", "test_revisar.jpg", "fone_bluetooth.jpg",
+        "sessions.json", "local_products.json"
+    }
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+    for p in file_paths:
+        if not p:
+            continue
+        try:
+            basename = os.path.basename(p)
+            if basename not in protected_files and os.path.exists(p):
+                os.remove(p)
+                print(f"🧹 Arquivo temporário excluído do disco: {p}")
+        except Exception as err:
+            print(f"⚠️ Erro ao remover arquivo temporário '{p}': {err}")
 
 
 # ID da pasta principal no Drive
 PARENT_FOLDER_ID = "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+
 
 def run_pipeline(image_paths, dry_run=True):
     from scripts.vision_processor import optimize_image_for_ml, analyze_product_image
@@ -258,7 +280,11 @@ def run_pipeline(image_paths, dry_run=True):
             "error": str(e)
         }
     finally:
+        cleanup_temp_files(image_paths)
+        if 'optimized_paths' in locals():
+            cleanup_temp_files(optimized_paths)
         gc.collect()
+
 
 
 
@@ -607,13 +633,17 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                             file_path = os.path.join("temp_uploads", filename)
                             
                             # Higieniza e decodifica bytes base64 / Data URL caso o canvas do celular tenha enviado em formato codificado
-                            file_content = clean_and_decode_image_bytes(file_content)
+                            clean_bytes = clean_and_decode_image_bytes(file_content)
                             
                             with open(file_path, 'wb') as f:
-                                f.write(file_content)
+                                f.write(clean_bytes)
                             saved_paths.append(file_path)
+
+                            # Libera imediatamente a memória de cada part/buffer
+                            del file_content, clean_bytes, headers_part
+                            gc.collect()
                 
-                del body
+                del parts, body
                 gc.collect()
 
                 if not saved_paths:
@@ -637,9 +667,11 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         print(f"❌ Erro no pipeline assíncrono: {err}")
                         traceback.print_exc()
                     finally:
+                        cleanup_temp_files(saved_paths)
                         gc.collect()
                 
                 threading.Thread(target=async_pipeline_worker, daemon=True).start()
+
                 
                 # 3. Retorna resposta síncrona imediatamente
                 result = {
