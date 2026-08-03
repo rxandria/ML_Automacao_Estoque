@@ -23,6 +23,18 @@ from scripts.drive_sheets_sync import (
     HEADERS
 )
 from scripts.ml_api_publisher import MLPublisher
+import uuid
+
+# Contas de acesso padrão (lidas do ambiente ou fallbacks)
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "owner@duotech.com")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "duotech123")
+
+USER2_USERNAME = os.environ.get("USER2_USERNAME", "colaborador@duotech.com")
+USER2_PASSWORD = os.environ.get("USER2_PASSWORD", "duotech456")
+
+# Gerenciamento de sessões em memória
+# Mapeia session_token -> {"username": "...", "role": "..."}
+SESSIONS = {}
 
 # ID da pasta principal no Drive
 PARENT_FOLDER_ID = "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
@@ -214,6 +226,27 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
 # --- Servidor Local HTTP ---
 
 class DashboardHTTPHandler(BaseHTTPRequestHandler):
+    def get_authenticated_user(self):
+        token = None
+        
+        # 1. Tenta carregar dos cookies
+        cookie_header = self.headers.get('Cookie')
+        if cookie_header:
+            cookies = re.findall(r'session_token=([^;]+)', cookie_header)
+            if cookies:
+                token = cookies[0].strip()
+                
+        # 2. Tenta carregar do header Authorization
+        if not token:
+            auth_header = self.headers.get('Authorization')
+            if auth_header and auth_header.startswith('Bearer '):
+                token = auth_header.split('Bearer ', 1)[1].strip()
+                
+        if token and token in SESSIONS:
+            return SESSIONS[token]
+            
+        return None
+
     def send_cors_response(self, status=200, content_type='application/json'):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -229,14 +262,35 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         
-        # Servir a página principal do Dashboard
+        # Servir a página de Login (pública)
+        if path == '/login.html':
+            self.send_cors_response(200, 'text/html; charset=utf-8')
+            with open('dashboard/login.html', 'rb') as f:
+                self.wfile.write(f.read())
+            return
+
+        # Para qualquer outro arquivo ou API, verifica a autenticação
+        user = self.get_authenticated_user()
+
+        # Se for a página principal e não estiver autenticado, redireciona para login.html
         if path in ('/', '/index.html'):
+            if not user:
+                self.send_response(302)
+                self.send_header('Location', '/login.html')
+                self.end_headers()
+                return
+            
             self.send_cors_response(200, 'text/html; charset=utf-8')
             with open('dashboard/index.html', 'rb') as f:
                 self.wfile.write(f.read())
                 
         # Servir os arquivos temporários locais (Imagens de thumbnail)
         elif path.startswith('/temp_uploads/'):
+            if not user:
+                self.send_cors_response(401)
+                self.wfile.write(json.dumps({"error": "Unauthorized"}).encode('utf-8'))
+                return
+
             filename = os.path.basename(path)
             file_path = os.path.join('temp_uploads', filename)
             
@@ -251,6 +305,11 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 
         # API: Obter todos os produtos cadastrados no Google Sheets (suporta /api/products e /api/data)
         elif path in ('/api/products', '/api/data'):
+            if not user:
+                self.send_cors_response(401)
+                self.wfile.write(json.dumps({"error": "Unauthorized"}).encode('utf-8'))
+                return
+
             try:
                 creds = authenticate()
                 sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
@@ -308,6 +367,83 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         
+        # API: Login de Usuários (pública)
+        if path == '/api/login':
+            try:
+                content_length = int(self.headers.get('content-length', 0))
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode('utf-8'))
+                
+                username = data.get("username")
+                password = data.get("password")
+                
+                user_role = None
+                if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+                    user_role = "owner"
+                elif username == USER2_USERNAME and password == USER2_PASSWORD:
+                    user_role = "collaborator"
+                    
+                if user_role:
+                    session_token = str(uuid.uuid4())
+                    SESSIONS[session_token] = {
+                        "username": username,
+                        "role": user_role
+                    }
+                    
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Set-Cookie', f'session_token={session_token}; Path=/; HttpOnly; SameSite=Lax')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "success": True,
+                        "token": session_token,
+                        "user": {
+                            "username": username,
+                            "role": user_role
+                        }
+                    }).encode('utf-8'))
+                    return
+                else:
+                    self.send_cors_response(401)
+                    self.wfile.write(json.dumps({"error": "Credenciais inválidas."}).encode('utf-8'))
+                    return
+            except Exception as e:
+                self.send_cors_response(500)
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+                return
+
+        # API: Logout de Usuários (pública)
+        elif path == '/api/logout':
+            cookie_header = self.headers.get('Cookie')
+            token = None
+            if cookie_header:
+                cookies = re.findall(r'session_token=([^;]+)', cookie_header)
+                if cookies:
+                    token = cookies[0].strip()
+            if not token:
+                auth_header = self.headers.get('Authorization')
+                if auth_header and auth_header.startswith('Bearer '):
+                    token = auth_header.split('Bearer ', 1)[1].strip()
+                    
+            if token and token in SESSIONS:
+                del SESSIONS[token]
+                
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Set-Cookie', 'session_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"success": True}).encode('utf-8'))
+            return
+
+        # Para as demais rotas POST, exige autenticação
+        user = self.get_authenticated_user()
+        if not user:
+            self.send_cors_response(401)
+            self.wfile.write(json.dumps({"error": "Unauthorized"}).encode('utf-8'))
+            return
+
         # API: Upload de imagens e execução automática do Pipeline (Suporta múltiplas imagens)
         if path == '/api/upload':
             try:
@@ -446,6 +582,13 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'Not Found')
 
     def do_DELETE(self):
+        # Exige autenticação para DELETE
+        user = self.get_authenticated_user()
+        if not user:
+            self.send_cors_response(401)
+            self.wfile.write(json.dumps({"error": "Unauthorized"}).encode('utf-8'))
+            return
+
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         

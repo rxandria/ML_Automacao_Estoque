@@ -910,9 +910,14 @@
                 <h1>DuoTech Store — Automação de Estoque & Mercado Livre</h1>
                 <p>Processamento Inteligente, Sincronização em Nuvem e Publicação Otimizada</p>
             </div>
-            <button class="refresh-btn" id="btn-refresh">
-                <i class="fa-solid fa-rotate"></i> Atualizar Dados
-            </button>
+            <div class="header-actions" style="display: flex; gap: 0.75rem; align-items: center;">
+                <button class="refresh-btn" id="btn-refresh">
+                    <i class="fa-solid fa-rotate"></i> Atualizar Dados
+                </button>
+                <button class="refresh-btn" id="btn-logout" style="background-color: var(--danger); box-shadow: 0 4px 12px rgba(239, 68, 68, 0.25);">
+                    <i class="fa-solid fa-right-from-bracket"></i> Sair
+                </button>
+            </div>
         </header>
 
         <!-- KPIs Quick Metrics -->
@@ -1121,6 +1126,32 @@
     <div class="toast-container" id="toast-wrapper"></div>
 
     <script>
+        // Validação imediata de autenticação no carregamento
+        if (!localStorage.getItem('session_token')) {
+            window.location.href = '/login.html';
+        }
+
+        // Interceptador global do fetch para injetar tokens e tratar 401
+        const originalFetch = window.fetch;
+        window.fetch = async function(url, options = {}) {
+            options.headers = options.headers || {};
+            const token = localStorage.getItem('session_token');
+            if (token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            try {
+                const response = await originalFetch(url, options);
+                if (response.status === 401) {
+                    localStorage.removeItem('session_token');
+                    localStorage.removeItem('user_info');
+                    window.location.href = '/login.html';
+                }
+                return response;
+            } catch (error) {
+                throw error;
+            }
+        };
+
         // DOM Elements
         const dropZone = document.getElementById('drop-zone');
         const fileInput = document.getElementById('file-input');
@@ -1129,6 +1160,7 @@
         const btnProcess = document.getElementById('btn-process');
         const loader = document.getElementById('loader');
         const btnRefresh = document.getElementById('btn-refresh');
+        const btnLogout = document.getElementById('btn-logout');
         const btnAddMore = document.getElementById('btn-add-more');
         
         const productsTableBody = document.getElementById('products-table-body');
@@ -1582,6 +1614,20 @@
                     showToast('Painel atualizado!');
                 }, 500);
             });
+        });
+
+        // Logout Event Listener
+        btnLogout.addEventListener('click', async () => {
+            try {
+                btnLogout.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saindo...';
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (err) {
+                console.error('Erro ao chamar api de logout:', err);
+            } finally {
+                localStorage.removeItem('session_token');
+                localStorage.removeItem('user_info');
+                window.location.href = '/login.html';
+            }
         });
 
         // Initial Load
