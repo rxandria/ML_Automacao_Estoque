@@ -76,7 +76,12 @@ def authenticate(allow_interactive=False):
             creds_data = json.loads(google_credentials_json)
             if isinstance(creds_data, dict) and creds_data.get("type") == "service_account":
                 creds = service_account.Credentials.from_service_account_info(creds_data, scopes=SCOPES)
-                print("🔑 [GOOGLE AUTH SUCCESS] Service Account carregada com sucesso via GOOGLE_CREDENTIALS_JSON.")
+                impersonate_user = get_sanitized_env("GOOGLE_IMPERSONATE_USER")
+                if impersonate_user:
+                    creds = creds.with_subject(impersonate_user)
+                    print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account personificando usuário: {impersonate_user}")
+                else:
+                    print("🔑 [GOOGLE AUTH SUCCESS] Service Account carregada com sucesso via GOOGLE_CREDENTIALS_JSON.")
                 return creds
             elif isinstance(creds_data, dict) and creds_data.get("type") == "authorized_user":
                 creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
@@ -100,7 +105,12 @@ def authenticate(allow_interactive=False):
     if app_credentials_path and os.path.exists(app_credentials_path):
         try:
             creds = service_account.Credentials.from_service_account_file(app_credentials_path, scopes=SCOPES)
-            print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account carregada do arquivo: {app_credentials_path}")
+            impersonate_user = get_sanitized_env("GOOGLE_IMPERSONATE_USER")
+            if impersonate_user:
+                creds = creds.with_subject(impersonate_user)
+                print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account personificando usuário do arquivo: {impersonate_user}")
+            else:
+                print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account carregada do arquivo: {app_credentials_path}")
             return creds
         except Exception as e:
             print(f"❌ [GOOGLE AUTH ERROR] Erro ao carregar Service Account do arquivo {app_credentials_path}: {e}")
