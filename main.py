@@ -42,12 +42,7 @@ from scripts.drive_sheets_sync import (
     add_product_to_sheet,
     delete_drive_file,
     delete_sheet_row,
-    get_first_sheet_name,
-    format_sheet_range,
     get_sanitized_env,
-    safe_sheets_get,
-    safe_sheets_update,
-    safe_sheets_append,
     HEADERS
 )
 from scripts.ml_api_publisher import MLPublisher
@@ -300,19 +295,13 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
             now_str                                                  # Data Criação
         ]
         
-        body = {
-            'values': [row_data]
-        }
-        
-        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
-        safe_sheets_update(
-            sheets_service=sheets_service,
-            spreadsheet_id=sheet_id,
-            sheet_name=sheet_name,
-            cell_range=f"A{row_num}:K{row_num}",
-            value_input_option="USER_ENTERED",
+        body = {'values': [row_data]}
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"A{row_num}:K{row_num}",
+            valueInputOption="USER_ENTERED",
             body=body
-        )
+        ).execute()
         print(f"📊 Linha {row_num} da planilha atualizada via Revisão Manual!")
         return True
         
@@ -473,14 +462,10 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     if sheet_id and sheet_id != "mock_sheet_id":
                         from googleapiclient.discovery import build
                         sheets_service = build("sheets", "v4", credentials=creds)
-                        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
-                        result = safe_sheets_get(
-                            sheets_service=sheets_service,
-                            spreadsheet_id=sheet_id,
-                            sheet_name=sheet_name,
-                            cell_range="A2:K200"
-                        )
-                        
+                        result = sheets_service.spreadsheets().values().get(
+                            spreadsheetId=sheet_id,
+                            range="A2:K200"
+                        ).execute()
                         rows = result.get('values', [])
                         for idx, row in enumerate(rows):
                             while len(row) < len(HEADERS):
@@ -924,15 +909,11 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         from googleapiclient.discovery import build
                         sheets_service = build("sheets", "v4", credentials=creds)
                         
-                        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
                         # Obtém a linha correspondente da planilha
-                        result = safe_sheets_get(
-                            sheets_service=sheets_service,
-                            spreadsheet_id=sheet_id,
-                            sheet_name=sheet_name,
-                            cell_range=f"A{row_num}:K{row_num}"
-                        )
-                        
+                        result = sheets_service.spreadsheets().values().get(
+                            spreadsheetId=sheet_id,
+                            range=f"A{row_num}:K{row_num}"
+                        ).execute()
                         rows = result.get('values', [])
                         if rows:
                             row_data = rows[0]

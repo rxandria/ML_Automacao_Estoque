@@ -19,12 +19,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scripts.drive_sheets_sync import (
-    get_sanitized_env,
-    format_sheet_range,
-    get_first_sheet_name,
-    safe_sheets_get,
-    safe_sheets_update,
-    safe_sheets_append
+    get_sanitized_env
 )
 from scripts.vision_processor import optimize_image_for_ml
 import main
@@ -43,39 +38,6 @@ class TestCloudRunResilience(unittest.TestCase):
             self.assertEqual(get_sanitized_env("DRIVE_FOLDER_ID"), "11XXYYZZ_Folder_Id_Quoted")
             self.assertEqual(get_sanitized_env("GOOGLE_CREDENTIALS_JSON"), '{"type": "service_account"}')
         print("✅ [TEST 1 PASSED] Higienização de Env Vars operando 100% com .strip()!")
-
-    def test_02_range_formatting_and_404_fallback(self):
-        print("\n🧪 [TEST 2] Testando formatação de ranges e fallback de HttpError 404...")
-        # 2a. Teste da formatação de range
-        self.assertEqual(format_sheet_range("Sheet1", "A2:K200"), "Sheet1!A2:K200")
-        self.assertEqual(format_sheet_range("Página 1", "A2:K200"), "'Página 1'!A2:K200")
-        self.assertEqual(format_sheet_range("", "A2:K200"), "A2:K200")
-
-        # 2b. Mock de service do Google Sheets simulando HttpError 404 no range primário e sucesso no fallback
-        resp_404 = Response({'status': '404', 'reason': 'Not Found'})
-        err_404 = HttpError(resp_404, b'{"error": {"code": 404, "message": "Requested entity was not found."}}')
-
-        mock_values = MagicMock()
-        mock_get_primary = MagicMock()
-        mock_get_primary.execute.side_effect = err_404
-
-        mock_get_fallback = MagicMock()
-        mock_get_fallback.execute.return_value = {"values": [["HEADER"], ["P1"]]}
-
-        def mock_get_side_effect(spreadsheetId, range):
-            if "Sheet1!" in range or "'Sheet1'!" in range:
-                return mock_get_primary
-            return mock_get_fallback
-
-        mock_values.get.side_effect = mock_get_side_effect
-
-        mock_sheets_service = MagicMock()
-        mock_sheets_service.spreadsheets.return_value.values.return_value = mock_values
-
-        result = safe_sheets_get(mock_sheets_service, "dummy_sheet_id", "Sheet1", "A2:K200")
-        self.assertIn("values", result)
-        self.assertEqual(result["values"][1][0], "P1")
-        print("✅ [TEST 2 PASSED] Safe Wrappers e Fallback de HttpError 404 validados com sucesso!")
 
     def test_03_image_processing_1200x1200_white_bg(self):
         print("\n🧪 [TEST 3] Testando otimização de imagem para 1200x1200px com fundo #FFFFFF...")

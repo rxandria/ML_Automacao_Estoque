@@ -185,132 +185,6 @@ def setup_google_sheet(folder_id=None, creds=None):
         return env_sheet_id
     return "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
-def format_sheet_range(sheet_name, cell_range):
-    """
-    Formata o intervalo de células para a API do Google Sheets.
-    Se o nome da aba não contiver espaços (ex: 'Sheet1' ou 'Controle_Estoque'), não coloca aspas simples adicionais.
-    Se contiver espaços (ex: 'Página 1'), utiliza aspas simples para delimitar o nome da aba.
-    """
-    if not sheet_name:
-        return cell_range
-    clean_name = str(sheet_name).strip("'\"")
-    if not clean_name:
-        return cell_range
-    if " " in clean_name:
-        return f"'{clean_name}'!{cell_range}"
-    return f"{clean_name}!{cell_range}"
-
-def get_first_sheet_name(sheets_service, spreadsheet_id, default="Sheet1"):
-    """
-    Obtém dinamicamente o nome limpo (title) da primeira aba disponível na planilha Google Sheets via
-    spreadsheet.get('sheets')[0]['properties']['title'].
-    """
-    if not sheets_service or not spreadsheet_id or spreadsheet_id == "mock_sheet_id":
-        return default
-    try:
-        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        sheets = spreadsheet.get("sheets", [])
-        if sheets and "properties" in sheets[0] and "title" in sheets[0]["properties"]:
-            sheet_title = str(sheets[0]["properties"]["title"]).strip("'\"")
-            if sheet_title:
-                return sheet_title
-    except Exception as e:
-        print(f"⚠️ [GOOGLE SHEETS] Não foi possível obter título da primeira aba dinamicamente ({e}). Usando fallback '{default}'.")
-    return default
-
-def safe_sheets_get(sheets_service, spreadsheet_id, sheet_name, cell_range):
-    """
-    Executa leitura no Google Sheets com resiliência total a HttpError 404:
-    1. Tenta ler com format_sheet_range(sheet_name, cell_range).
-    2. Se falhar por HttpError 404, faz fallback gracioso para cell_range direto (sem prefixo de aba).
-    """
-    primary_range = format_sheet_range(sheet_name, cell_range)
-    try:
-        return sheets_service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range=primary_range
-        ).execute()
-    except HttpError as err:
-        print(f"⚠️ [GOOGLE SHEETS GET FALLBACK] Falha com range '{primary_range}' ({err}). Executando fallback para range direto '{cell_range}'...")
-        try:
-            return sheets_service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=cell_range
-            ).execute()
-        except HttpError as err_fallback:
-            print(f"❌ [GOOGLE SHEETS GET ERROR] Erro definitivo na leitura ({err_fallback}):")
-            raise err_fallback
-
-def safe_sheets_update(sheets_service, spreadsheet_id, sheet_name, cell_range, value_input_option, body):
-    """
-    Executa atualização no Google Sheets com resiliência total a HttpError 404:
-    1. Tenta atualizar com format_sheet_range(sheet_name, cell_range).
-    2. Se falhar por HttpError 404, faz fallback gracioso para cell_range direto.
-    """
-    primary_range = format_sheet_range(sheet_name, cell_range)
-    try:
-        return sheets_service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=primary_range,
-            valueInputOption=value_input_option,
-            body=body
-        ).execute()
-    except HttpError as err:
-        print(f"⚠️ [GOOGLE SHEETS UPDATE FALLBACK] Falha com range '{primary_range}' ({err}). Executando fallback para range direto '{cell_range}'...")
-        try:
-            return sheets_service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=cell_range,
-                valueInputOption=value_input_option,
-                body=body
-            ).execute()
-        except HttpError as err_fallback:
-            print(f"❌ [GOOGLE SHEETS UPDATE ERROR] Erro definitivo na gravação ({err_fallback}):")
-            raise err_fallback
-
-def safe_sheets_append(sheets_service, spreadsheet_id, sheet_name, cell_range, value_input_option, insert_data_option, body):
-    """
-    Executa inclusão de linha (append) no Google Sheets com resiliência total a HttpError 404:
-    1. Tenta incluir linhas com format_sheet_range(sheet_name, cell_range).
-    2. Se falhar por HttpError 404, faz fallback gracioso para cell_range direto.
-    """
-    primary_range = format_sheet_range(sheet_name, cell_range)
-    try:
-        return sheets_service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range=primary_range,
-            valueInputOption=value_input_option,
-            insertDataOption=insert_data_option,
-            body=body
-        ).execute()
-    except HttpError as err:
-        print(f"⚠️ [GOOGLE SHEETS APPEND FALLBACK] Falha com range '{primary_range}' ({err}). Executando fallback para range direto '{cell_range}'...")
-        try:
-            return sheets_service.spreadsheets().values().append(
-                spreadsheetId=spreadsheet_id,
-                range=cell_range,
-                valueInputOption=value_input_option,
-                insertDataOption=insert_data_option,
-                body=body
-            ).execute()
-        except HttpError as err_fallback:
-            print(f"❌ [GOOGLE SHEETS APPEND ERROR] Erro definitivo ao anexar linha ({err_fallback}):")
-            raise err_fallback
-
-def setup_google_sheet(folder_id=None, creds=None):
-    """
-    Retorna o SPREADSHEET_ID configurado nas variáveis de ambiente (sanitizado com .strip()).
-    NÃO executa files().create() para evitar erro storageQuotaExceeded na Service Account.
-    """
-    env_sheet_id = get_sanitized_env("SPREADSHEET_ID")
-    if env_sheet_id:
-        return env_sheet_id
-    if folder_id and isinstance(folder_id, str):
-        folder_id = folder_id.strip()
-        if folder_id:
-            return folder_id
-    return "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
-
 def upload_product_photo(file_input, photos_folder_id, creds):
     """
     Faz upload de foto para o Google Drive com consumo de RAM reduzido (< 5MB).
@@ -407,17 +281,15 @@ def upload_product_photo(file_input, photos_folder_id, creds):
 def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_reason, creds, product_id=""):
     """
     Adiciona uma nova linha com os dados de processamento do produto na planilha.
+    Utiliza range="A1" com USER_ENTERED diretamente na API REST do Google Sheets.
     """
     if not creds or not sheet_id or sheet_id == "mock_sheet_id":
         print(f"❌ [GOOGLE SHEETS ERROR] Credenciais ou planilha nulos. Ignorando gravação no Sheets para '{product_data.get('titulo')}'")
         return False
     try:
         sheets_service = build("sheets", "v4", credentials=creds)
-        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
-        
         now_str = format_brasilia_time("%d/%m/%Y %H:%M:%S")
 
-        
         row_data = [
             product_id,                                              # ID Produto
             product_data.get("titulo", ""),                          # Título
@@ -432,23 +304,15 @@ def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_r
             now_str                                                  # Data Criação
         ]
         
-        body = {
-            'values': [row_data]
-        }
-        
-        safe_sheets_append(
-            sheets_service=sheets_service,
-            spreadsheet_id=sheet_id,
-            sheet_name=sheet_name,
-            cell_range="A1",
-            value_input_option="USER_ENTERED",
-            insert_data_option="INSERT_ROWS",
+        body = {'values': [row_data]}
+        sheets_service.spreadsheets().values().append(
+            spreadsheetId=sheet_id,
+            range="A1",
+            valueInputOption="USER_ENTERED",
             body=body
-        )
-        print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso! Registro adicionado na planilha.")
+        ).execute()
+        print("📊 [GOOGLE SHEETS SYNC OK] Registro adicionado na planilha (range='A1').")
         return True
-
-        
     except Exception as e:
         import traceback
         print(f"❌ [GOOGLE SHEETS ERROR] Erro ao registrar produto na planilha: {e}")
