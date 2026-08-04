@@ -192,6 +192,23 @@ def setup_drive_structure(folder_id, creds):
         traceback.print_exc()
         return None
 
+def get_first_sheet_name(sheets_service, spreadsheet_id, default="Sheet1"):
+    """
+    Obtém dinamicamente o nome (title) da primeira aba disponível na planilha Google Sheets via
+    spreadsheet.get('sheets')[0]['properties']['title'].
+    """
+    if not sheets_service or not spreadsheet_id or spreadsheet_id == "mock_sheet_id":
+        return default
+    try:
+        spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        sheets = spreadsheet.get("sheets", [])
+        if sheets and "properties" in sheets[0] and "title" in sheets[0]["properties"]:
+            sheet_title = sheets[0]["properties"]["title"]
+            return sheet_title
+    except Exception as e:
+        print(f"⚠️ [GOOGLE SHEETS] Não foi possível obter título da primeira aba dinamicamente ({e}). Usando fallback '{default}'.")
+    return default
+
 def setup_google_sheet(folder_id, creds):
     """
     Verifica se a planilha existe ou retorna a planilha configurada via SPREADSHEET_ID.
@@ -222,9 +239,10 @@ def setup_google_sheet(folder_id, creds):
             print(f"📄 Planilha 'Controle_Estoque_MercadoLivre' já existe. ID: {sheet_id}")
             
             sheets_service = build("sheets", "v4", credentials=creds)
+            sheet_name = get_first_sheet_name(sheets_service, sheet_id)
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
-                range="A1",
+                range=f"'{sheet_name}'!A1",
                 valueInputOption="RAW",
                 body={'values': [HEADERS]}
             ).execute()
@@ -240,12 +258,13 @@ def setup_google_sheet(folder_id, creds):
             print(f"📄 Planilha criada com ID: {sheet_id}. Inserindo cabeçalhos...")
             
             sheets_service = build("sheets", "v4", credentials=creds)
+            sheet_name = get_first_sheet_name(sheets_service, sheet_id)
             body = {
                 'values': [HEADERS]
             }
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
-                range="A1",
+                range=f"'{sheet_name}'!A1",
                 valueInputOption="RAW",
                 body=body
             ).execute()
@@ -349,6 +368,7 @@ def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_r
         return False
     try:
         sheets_service = build("sheets", "v4", credentials=creds)
+        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
         
         now_str = format_brasilia_time("%d/%m/%Y %H:%M:%S")
 
@@ -373,7 +393,7 @@ def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_r
         
         sheets_service.spreadsheets().values().append(
             spreadsheetId=sheet_id,
-            range="A1",
+            range=f"'{sheet_name}'!A1",
             valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body=body

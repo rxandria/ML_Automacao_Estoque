@@ -42,6 +42,7 @@ from scripts.drive_sheets_sync import (
     add_product_to_sheet,
     delete_drive_file,
     delete_sheet_row,
+    get_first_sheet_name,
     HEADERS
 )
 from scripts.ml_api_publisher import MLPublisher
@@ -298,9 +299,10 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
             'values': [row_data]
         }
         
+        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
         sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
-            range=f"A{row_num}:K{row_num}",
+            range=f"'{sheet_name}'!A{row_num}:K{row_num}",
             valueInputOption="USER_ENTERED",
             body=body
         ).execute()
@@ -464,10 +466,10 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     if sheet_id and sheet_id != "mock_sheet_id":
                         from googleapiclient.discovery import build
                         sheets_service = build("sheets", "v4", credentials=creds)
-                        
+                        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
                         result = sheets_service.spreadsheets().values().get(
                             spreadsheetId=sheet_id,
-                            range="A2:K200"
+                            range=f"'{sheet_name}'!A2:K200"
                         ).execute()
                         
                         rows = result.get('values', [])
@@ -913,10 +915,11 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         from googleapiclient.discovery import build
                         sheets_service = build("sheets", "v4", credentials=creds)
                         
+                        sheet_name = get_first_sheet_name(sheets_service, sheet_id)
                         # Obtém a linha correspondente da planilha
                         result = sheets_service.spreadsheets().values().get(
                             spreadsheetId=sheet_id,
-                            range=f"A{row_num}:K{row_num}"
+                            range=f"'{sheet_name}'!A{row_num}:K{row_num}"
                         ).execute()
                         
                         rows = result.get('values', [])
