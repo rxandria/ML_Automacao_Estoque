@@ -688,22 +688,21 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 save_local_products(LOCAL_PRODUCTS)
                 gc.collect()
 
-                # 2. Executa o restante do pipeline (otimização, upload ao Drive, Sheets e ML) em worker background 100% isolado
-                import threading
-                def async_pipeline_worker():
-                    try:
-                        run_pipeline(saved_paths, dry_run=True, product_id=product_id)
-                    except Exception as err:
-                        import traceback
-                        print(f"❌ Erro no pipeline assíncrono: {err}")
-                        traceback.print_exc()
-                    finally:
-                        cleanup_temp_files(saved_paths)
-                        gc.collect()
-                
-                threading.Thread(target=async_pipeline_worker, daemon=True).start()
+                # 2. Executa o pipeline completo (otimização de fundo branco, upload ao Drive e Sheets) de forma síncrona
+                try:
+                    pipeline_res = run_pipeline(saved_paths, dry_run=True, product_id=product_id)
+                    if isinstance(pipeline_res, dict) and pipeline_res.get("product_data"):
+                        product_data = pipeline_res["product_data"]
+                        requires_review = pipeline_res.get("requires_manual_review", requires_review)
+                except Exception as err:
+                    import traceback
+                    print(f"❌ Erro no pipeline síncrono: {err}")
+                    traceback.print_exc()
+                finally:
+                    cleanup_temp_files(saved_paths)
+                    gc.collect()
 
-                # 3. Retorna resposta HTTP síncrona de forma segura contra BrokenPipeError / desconexão de cliente
+                # 3. Retorna resposta HTTP síncrona com os dados concluídos (incluindo URL do Drive no Sheets)
                 result = {
                     "success": True,
                     "requires_manual_review": requires_review,

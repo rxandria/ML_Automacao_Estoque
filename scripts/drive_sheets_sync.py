@@ -188,7 +188,7 @@ def setup_google_sheet(folder_id=None, creds=None):
 def upload_product_photo(file_input, photos_folder_id, creds):
     """
     Faz upload de foto para o Google Drive com consumo de RAM reduzido (< 5MB).
-    Salva diretamente dentro de photos_folder_id (parents) com supportsAllDrives=True.
+    Salva diretamente dentro de photos_folder_id (parents).
     Retorna a URL pública do Google Drive ou None em caso de falha (sem gerar URLs mock fictícias).
     """
     env_folder_id = get_sanitized_env("DRIVE_FOLDER_ID")
@@ -198,7 +198,7 @@ def upload_product_photo(file_input, photos_folder_id, creds):
     folder_id = folder_id or env_folder_id or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
     if not creds or not folder_id:
-        print("❌ [GOOGLE DRIVE ERROR] Credenciais ou folder_id nulos. Upload cancelado (Nenhum link mock gerado).")
+        print("❌ [GOOGLE DRIVE ERROR] Credenciais ou folder_id nulos. Upload cancelado.")
         return None
 
     random_id = uuid.uuid4().hex[:6]
@@ -240,27 +240,42 @@ def upload_product_photo(file_input, photos_folder_id, creds):
             'parents': [folder_id]
         }
         
-        file_obj = service.files().create(
-            body=file_metadata, 
-            media_body=media, 
-            supportsAllDrives=True,
-            fields='id, webViewLink'
-        ).execute()
+        try:
+            file_obj = service.files().create(
+                body=file_metadata, 
+                media_body=media, 
+                supportsAllDrives=True,
+                fields='id, webViewLink'
+            ).execute()
+        except HttpError as drive_err:
+            print(f"⚠️ [GOOGLE DRIVE] Tentativa com supportsAllDrives=True falhou ({drive_err}). Tentando upload padrão...")
+            file_obj = service.files().create(
+                body=file_metadata, 
+                media_body=media, 
+                fields='id, webViewLink'
+            ).execute()
         
         file_id = file_obj.get('id')
         print(f"📷 [GOOGLE DRIVE SUCCESS] Upload concluído com sucesso na pasta '{folder_id}'! ID: {file_id}")
         
         try:
             permission = {'type': 'anyone', 'role': 'reader'}
-            service.permissions().create(
-                fileId=file_id, 
-                body=permission, 
-                supportsAllDrives=True
-            ).execute()
+            try:
+                service.permissions().create(
+                    fileId=file_id, 
+                    body=permission, 
+                    supportsAllDrives=True
+                ).execute()
+            except Exception:
+                service.permissions().create(
+                    fileId=file_id, 
+                    body=permission
+                ).execute()
         except Exception as perm_err:
             print(f"⚠️ Permissão pública no Drive: {perm_err}")
 
         public_url = file_obj.get('webViewLink') or f"https://drive.google.com/file/d/{file_id}/view"
+        print(f"🟢 [GOOGLE DRIVE URL] URL gerada para a foto: {public_url}")
         return public_url
 
     except Exception as error:
