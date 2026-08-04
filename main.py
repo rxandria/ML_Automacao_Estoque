@@ -48,6 +48,8 @@ from scripts.drive_sheets_sync import (
     safe_sheets_get,
     safe_sheets_update,
     safe_sheets_append,
+    get_or_create_spreadsheet_id,
+    get_or_create_drive_folder_id,
     HEADERS
 )
 from scripts.ml_api_publisher import MLPublisher
@@ -152,10 +154,10 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         print("\n🔑 Passo 1: Autenticando com Google APIs...")
         creds = authenticate()
         
-        # 2. Inicialização das estruturas no Drive e Sheets
-        print("\n📁 Passo 2: Configurando estrutura no Google Drive/Sheets...")
-        photos_folder_id = setup_drive_structure(PARENT_FOLDER_ID, creds)
-        sheet_id = setup_google_sheet(PARENT_FOLDER_ID, creds)
+        # 2. Inicialização das estruturas no Drive e Sheets (com Auto-Provisionamento)
+        print("\n📁 Passo 2: Configurando estrutura no Google Drive/Sheets (Auto-Provisionamento se 404)...")
+        photos_folder_id = get_or_create_drive_folder_id(creds)
+        sheet_id = get_or_create_spreadsheet_id(creds)
         
         # 3. Análise do produto com a IA (baseado na 1ª imagem / Principal)
         print("\n🧠 Passo 3: Analisando imagem principal do produto...")
