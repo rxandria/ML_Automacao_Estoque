@@ -50,6 +50,18 @@ HEADERS = [
     "Revisão Necessária", "Motivo Revisão", "Data Criação"
 ]
 
+def get_sanitized_env(key, default=None):
+    """
+    Recupera variável de ambiente aplicando .strip() rigoroso para remover espaços, 
+    aspas ou quebras de linha acidentais (\n).
+    """
+    val = os.environ.get(key)
+    if val:
+        val = str(val).strip().strip("'\"")
+        if val:
+            return val
+    return default
+
 from google.oauth2 import service_account
 
 def authenticate(allow_interactive=False):
@@ -58,7 +70,7 @@ def authenticate(allow_interactive=False):
     import json
     
     # 1. Tenta Service Account a partir de GOOGLE_CREDENTIALS_JSON (String JSON de Service Account em ambiente Cloud Run)
-    google_credentials_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    google_credentials_json = get_sanitized_env("GOOGLE_CREDENTIALS_JSON")
     if google_credentials_json:
         try:
             creds_data = json.loads(google_credentials_json)
@@ -84,7 +96,7 @@ def authenticate(allow_interactive=False):
             creds = None
 
     # 2. Tenta Service Account a partir de GOOGLE_APPLICATION_CREDENTIALS (Caminho para arquivo JSON)
-    app_credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    app_credentials_path = get_sanitized_env("GOOGLE_APPLICATION_CREDENTIALS")
     if app_credentials_path and os.path.exists(app_credentials_path):
         try:
             creds = service_account.Credentials.from_service_account_file(app_credentials_path, scopes=SCOPES)
@@ -96,7 +108,7 @@ def authenticate(allow_interactive=False):
             creds = None
 
     # 3. Tenta carregar credenciais de usuário OAuth via GOOGLE_TOKEN_JSON
-    google_token_json = os.environ.get("GOOGLE_TOKEN_JSON")
+    google_token_json = get_sanitized_env("GOOGLE_TOKEN_JSON")
     if google_token_json:
         try:
             token_data = json.loads(google_token_json)
@@ -152,10 +164,10 @@ def authenticate(allow_interactive=False):
 def setup_drive_structure(folder_id, creds):
     """
     Verifica se a pasta 'Fotos_Produtos' existe dentro de folder_id.
-    Lê a variável de ambiente DRIVE_FOLDER_ID como prioridade.
+    Lê a variável de ambiente DRIVE_FOLDER_ID como prioridade (com .strip()).
     """
-    env_folder_id = os.environ.get("DRIVE_FOLDER_ID")
-    folder_id = env_folder_id or folder_id or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+    env_folder_id = get_sanitized_env("DRIVE_FOLDER_ID")
+    folder_id = env_folder_id or (folder_id.strip() if folder_id else None) or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
     if not creds:
         print("❌ [GOOGLE DRIVE ERROR] Credenciais ausentes. Impossível configurar pasta no Google Drive.")
@@ -225,11 +237,90 @@ def get_first_sheet_name(sheets_service, spreadsheet_id, default="Sheet1"):
         print(f"⚠️ [GOOGLE SHEETS] Não foi possível obter título da primeira aba dinamicamente ({e}). Usando fallback '{default}'.")
     return default
 
+def safe_sheets_get(sheets_service, spreadsheet_id, sheet_name, cell_range):
+    """
+    Executa leitura no Google Sheets com resiliência total a HttpError 404:
+    1. Tenta ler com format_sheet_range(sheet_name, cell_range).
+    2. Se falhar por HttpError 404, faz fallback gracioso para cell_range direto (sem prefixo de aba).
+    """
+    primary_range = format_sheet_range(sheet_name, cell_range)
+    try:
+        return sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=primary_range
+        ).execute()
+    except HttpError as err:
+        print(f"⚠️ [GOOGLE SHEETS GET FALLBACK] Falha com range '{primary_range}' ({err}). Executando fallback para range direto '{cell_range}'...")
+        try:
+            return sheets_service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=cell_range
+            ).execute()
+        except HttpError as err_fallback:
+            print(f"❌ [GOOGLE SHEETS GET ERROR] Erro definitivo na leitura ({err_fallback}):")
+            raise err_fallback
+
+def safe_sheets_update(sheets_service, spreadsheet_id, sheet_name, cell_range, value_input_option, body):
+    """
+    Executa atualização no Google Sheets com resiliência total a HttpError 404:
+    1. Tenta atualizar com format_sheet_range(sheet_name, cell_range).
+    2. Se falhar por HttpError 404, faz fallback gracioso para cell_range direto.
+    """
+    primary_range = format_sheet_range(sheet_name, cell_range)
+    try:
+        return sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=primary_range,
+            valueInputOption=value_input_option,
+            body=body
+        ).execute()
+    except HttpError as err:
+        print(f"⚠️ [GOOGLE SHEETS UPDATE FALLBACK] Falha com range '{primary_range}' ({err}). Executando fallback para range direto '{cell_range}'...")
+        try:
+            return sheets_service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=cell_range,
+                valueInputOption=value_input_option,
+                body=body
+            ).execute()
+        except HttpError as err_fallback:
+            print(f"❌ [GOOGLE SHEETS UPDATE ERROR] Erro definitivo na gravação ({err_fallback}):")
+            raise err_fallback
+
+def safe_sheets_append(sheets_service, spreadsheet_id, sheet_name, cell_range, value_input_option, insert_data_option, body):
+    """
+    Executa inclusão de linha (append) no Google Sheets com resiliência total a HttpError 404:
+    1. Tenta incluir linhas com format_sheet_range(sheet_name, cell_range).
+    2. Se falhar por HttpError 404, faz fallback gracioso para cell_range direto.
+    """
+    primary_range = format_sheet_range(sheet_name, cell_range)
+    try:
+        return sheets_service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=primary_range,
+            valueInputOption=value_input_option,
+            insertDataOption=insert_data_option,
+            body=body
+        ).execute()
+    except HttpError as err:
+        print(f"⚠️ [GOOGLE SHEETS APPEND FALLBACK] Falha com range '{primary_range}' ({err}). Executando fallback para range direto '{cell_range}'...")
+        try:
+            return sheets_service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range=cell_range,
+                valueInputOption=value_input_option,
+                insertDataOption=insert_data_option,
+                body=body
+            ).execute()
+        except HttpError as err_fallback:
+            print(f"❌ [GOOGLE SHEETS APPEND ERROR] Erro definitivo ao anexar linha ({err_fallback}):")
+            raise err_fallback
+
 def setup_google_sheet(folder_id, creds):
     """
     Verifica se a planilha existe ou retorna a planilha configurada via SPREADSHEET_ID.
     """
-    env_sheet_id = os.environ.get("SPREADSHEET_ID")
+    env_sheet_id = get_sanitized_env("SPREADSHEET_ID")
     if env_sheet_id:
         print(f"📄 [GOOGLE SHEETS] Usando SPREADSHEET_ID das variáveis de ambiente: {env_sheet_id}")
         return env_sheet_id
@@ -240,8 +331,8 @@ def setup_google_sheet(folder_id, creds):
     try:
         service = build("drive", "v3", credentials=creds)
         
-        env_folder_id = os.environ.get("DRIVE_FOLDER_ID")
-        folder_id = env_folder_id or folder_id or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+        env_folder_id = get_sanitized_env("DRIVE_FOLDER_ID")
+        folder_id = env_folder_id or (folder_id.strip() if folder_id else None) or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
         query = (
             f"name = 'Controle_Estoque_MercadoLivre' and '{folder_id}' in parents "
@@ -256,12 +347,14 @@ def setup_google_sheet(folder_id, creds):
             
             sheets_service = build("sheets", "v4", credentials=creds)
             sheet_name = get_first_sheet_name(sheets_service, sheet_id)
-            sheets_service.spreadsheets().values().update(
-                spreadsheetId=sheet_id,
-                range=format_sheet_range(sheet_name, "A1"),
-                valueInputOption="RAW",
+            safe_sheets_update(
+                sheets_service=sheets_service,
+                spreadsheet_id=sheet_id,
+                sheet_name=sheet_name,
+                cell_range="A1",
+                value_input_option="RAW",
                 body={'values': [HEADERS]}
-            ).execute()
+            )
         else:
             print("📄 Criando planilha 'Controle_Estoque_MercadoLivre'...")
             file_metadata = {
@@ -278,12 +371,14 @@ def setup_google_sheet(folder_id, creds):
             body = {
                 'values': [HEADERS]
             }
-            sheets_service.spreadsheets().values().update(
-                spreadsheetId=sheet_id,
-                range=format_sheet_range(sheet_name, "A1"),
-                valueInputOption="RAW",
+            safe_sheets_update(
+                sheets_service=sheets_service,
+                spreadsheet_id=sheet_id,
+                sheet_name=sheet_name,
+                cell_range="A1",
+                value_input_option="RAW",
                 body=body
-            ).execute()
+            )
             print("📄 Cabeçalhos inseridos com sucesso!")
             
         return sheet_id
@@ -407,13 +502,15 @@ def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_r
             'values': [row_data]
         }
         
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=sheet_id,
-            range=format_sheet_range(sheet_name, "A1"),
-            valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
+        safe_sheets_append(
+            sheets_service=sheets_service,
+            spreadsheet_id=sheet_id,
+            sheet_name=sheet_name,
+            cell_range="A1",
+            value_input_option="USER_ENTERED",
+            insert_data_option="INSERT_ROWS",
             body=body
-        ).execute()
+        )
         print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso! Registro adicionado na planilha.")
         return True
 

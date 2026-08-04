@@ -44,6 +44,10 @@ from scripts.drive_sheets_sync import (
     delete_sheet_row,
     get_first_sheet_name,
     format_sheet_range,
+    get_sanitized_env,
+    safe_sheets_get,
+    safe_sheets_update,
+    safe_sheets_append,
     HEADERS
 )
 from scripts.ml_api_publisher import MLPublisher
@@ -124,8 +128,8 @@ def cleanup_temp_files(file_paths):
             print(f"⚠️ Erro ao remover arquivo temporário '{p}': {err}")
 
 
-# ID da pasta principal no Drive
-PARENT_FOLDER_ID = "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+# ID da pasta principal no Drive (lida de DRIVE_FOLDER_ID com fallback)
+PARENT_FOLDER_ID = get_sanitized_env("DRIVE_FOLDER_ID", "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70")
 
 
 def run_pipeline(image_paths, dry_run=True, product_id=None):
@@ -301,12 +305,14 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
         }
         
         sheet_name = get_first_sheet_name(sheets_service, sheet_id)
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=sheet_id,
-            range=format_sheet_range(sheet_name, f"A{row_num}:K{row_num}"),
-            valueInputOption="USER_ENTERED",
+        safe_sheets_update(
+            sheets_service=sheets_service,
+            spreadsheet_id=sheet_id,
+            sheet_name=sheet_name,
+            cell_range=f"A{row_num}:K{row_num}",
+            value_input_option="USER_ENTERED",
             body=body
-        ).execute()
+        )
         print(f"📊 Linha {row_num} da planilha atualizada via Revisão Manual!")
         return True
         
@@ -468,10 +474,12 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         from googleapiclient.discovery import build
                         sheets_service = build("sheets", "v4", credentials=creds)
                         sheet_name = get_first_sheet_name(sheets_service, sheet_id)
-                        result = sheets_service.spreadsheets().values().get(
-                            spreadsheetId=sheet_id,
-                            range=format_sheet_range(sheet_name, "A2:K200")
-                        ).execute()
+                        result = safe_sheets_get(
+                            sheets_service=sheets_service,
+                            spreadsheet_id=sheet_id,
+                            sheet_name=sheet_name,
+                            cell_range="A2:K200"
+                        )
                         
                         rows = result.get('values', [])
                         for idx, row in enumerate(rows):
@@ -918,10 +926,12 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         
                         sheet_name = get_first_sheet_name(sheets_service, sheet_id)
                         # Obtém a linha correspondente da planilha
-                        result = sheets_service.spreadsheets().values().get(
-                            spreadsheetId=sheet_id,
-                            range=format_sheet_range(sheet_name, f"A{row_num}:K{row_num}")
-                        ).execute()
+                        result = safe_sheets_get(
+                            sheets_service=sheets_service,
+                            spreadsheet_id=sheet_id,
+                            sheet_name=sheet_name,
+                            cell_range=f"A{row_num}:K{row_num}"
+                        )
                         
                         rows = result.get('values', [])
                         if rows:
