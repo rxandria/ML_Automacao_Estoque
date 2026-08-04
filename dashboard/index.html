@@ -1406,11 +1406,15 @@
 
                 const formatDate = (dateStr) => {
                     if (!dateStr) return "-";
+                    if (dateStr.includes("/")) return dateStr;
                     try {
                         const parts = dateStr.split(" ");
-                        const dateParts = parts[0].split("-");
-                        const timeParts = parts[1].split(":");
-                        return `${dateParts[2]}/${dateParts[1]}/${dateParts[0]} ${timeParts[0]}:${timeParts[1]}`;
+                        if (parts[0].includes("-")) {
+                            const dateParts = parts[0].split("-");
+                            const timeParts = parts[1] ? parts[1].split(":") : ["00", "00"];
+                            return `${dateParts[2]}/${dateParts[1]}/${dateParts[0]} ${timeParts[0]}:${timeParts[1]}`;
+                        }
+                        return dateStr;
                     } catch (e) {
                         return dateStr;
                     }

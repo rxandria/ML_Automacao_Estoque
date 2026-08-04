@@ -103,12 +103,21 @@ LOCAL_PRODUCTS = load_local_products()
 def cleanup_temp_files(file_paths):
     """
     Exclui arquivos temporários de upload da pasta temp_uploads/ se existirem,
-    preservando apenas fixtures e arquivos de estado essenciais.
+    preservando fixtures, arquivos de estado e imagens ativas de produtos.
     """
     protected_files = {
         "test_product.jpg", "test_revisar.jpg", "fone_bluetooth.jpg",
         "sessions.json", "local_products.json"
     }
+    # Adiciona fotos atualmente registradas em produtos locais à lista protegida
+    for prod in LOCAL_PRODUCTS:
+        uf = prod.get("url_fotos", "")
+        lt = prod.get("local_thumb", "")
+        for u in (uf.split(",") + [lt]):
+            u_clean = u.strip()
+            if "/temp_uploads/" in u_clean:
+                protected_files.add(os.path.basename(u_clean))
+
     if isinstance(file_paths, str):
         file_paths = [file_paths]
     for p in file_paths:
@@ -127,7 +136,16 @@ def cleanup_temp_files(file_paths):
 PARENT_FOLDER_ID = get_sanitized_env("DRIVE_FOLDER_ID", "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70")
 
 
-def run_pipeline(image_paths, dry_run=True, product_id=None):
+def run_pipeline(image_paths, dry_run=True, product_id=None, host_url=None):
+    """
+    Executa o pipeline completo de processamento de fotos:
+    1. Autenticação e Verificação de Estruturas
+    2. Análise por IA (Gemini Vision) da Imagem Principal
+    3. Tratamento e Otimização da Imagem Principal (Fundo Branco Puro #FFFFFF)
+    4. Upload Leve para o Google Drive ou Servidor Web Estático
+    5. Gravação Garantida no Google Sheets (Status: HOMOLOGADO ou REVISAO_MANUAL)
+    6. Validação do Payload e Publicação Simulada no Mercado Livre
+    """
     from scripts.vision_processor import optimize_image_for_ml, analyze_product_image
 
     # Aceita string única ou lista de caminhos
@@ -165,14 +183,14 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         status = "REVISAO_MANUAL" if requires_review else "HOMOLOGADO (DRY RUN)"
         reason = product_data.get("review_reason", "Aprovado via IA") if requires_review else "Validação do payload aprovada via IA."
 
-        # 4. Upload sequencial das fotos para o Google Drive com fundo branco puro (#FFFFFF)
-        print("\n📷 Passo 4: Otimizando fundo branco (#FFFFFF) e enviando fotos para o Google Drive...")
+        # 4. Upload sequencial das fotos para o Google Drive / Servidor Web com fundo branco puro (#FFFFFF)
+        print("\n📷 Passo 4: Otimizando fundo branco (#FFFFFF) e enviando fotos...")
         public_urls = []
         for idx, img_path in enumerate(image_paths):
-            print(f"🚀 Otimizando e enviando foto {idx+1}/{len(image_paths)} para o Google Drive...")
+            print(f"🚀 Otimizando e enviando foto {idx+1}/{len(image_paths)}...")
             processed_img = optimize_image_for_ml(img_path, remove_bg=True)
             target_upload_path = processed_img if processed_img and os.path.exists(processed_img) else img_path
-            url = upload_product_photo(target_upload_path, photos_folder_id, creds)
+            url = upload_product_photo(target_upload_path, photos_folder_id, creds, host_url=host_url)
             if url:
                 public_urls.append(url)
             gc.collect()
@@ -688,9 +706,14 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 save_local_products(LOCAL_PRODUCTS)
                 gc.collect()
 
-                # 2. Executa o pipeline completo (otimização de fundo branco, upload ao Drive e Sheets) de forma síncrona
+                # 2. Extrai o Host público do request HTTP para montagem de URLs estáticas de imagens
+                host_hdr = self.headers.get('Host', '')
+                proto = self.headers.get('X-Forwarded-Proto', 'https' if 'run.app' in host_hdr else 'http')
+                host_url = f"{proto}://{host_hdr}" if host_hdr else ""
+
+                # 3. Executa o pipeline completo (otimização de fundo branco, upload ao Drive/Servidor Web e Sheets) de forma síncrona
                 try:
-                    pipeline_res = run_pipeline(saved_paths, dry_run=True, product_id=product_id)
+                    pipeline_res = run_pipeline(saved_paths, dry_run=True, product_id=product_id, host_url=host_url)
                     if isinstance(pipeline_res, dict) and pipeline_res.get("product_data"):
                         product_data = pipeline_res["product_data"]
                         requires_review = pipeline_res.get("requires_manual_review", requires_review)
