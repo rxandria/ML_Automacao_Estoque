@@ -1643,8 +1643,8 @@
             renderPreviewGrid();
         }
 
-        // Converte e comprime imagens no cliente para Base64 (max 800px mantendo proporção, qualidade JPEG 0.55)
-        async function compressImageToBase64(file, maxWidth = 800, maxHeight = 800, quality = 0.55) {
+        // Converte e comprime imagens no cliente para Base64 em Canvas (máximo 1600px, qualidade JPEG 0.8)
+        async function compressImageToBase64(file, maxWidth = 1600, maxHeight = 1600, quality = 0.8) {
             if (!file || !file.type || !file.type.startsWith('image/')) return null;
 
             return new Promise((resolve) => {
@@ -1674,7 +1674,7 @@
                     ctx.drawImage(img, 0, 0, width, height);
                     
                     const base64Data = canvas.toDataURL('image/jpeg', quality);
-                    console.log(`📷 Convertida para Base64 (800px/0.55): ${file.name} (${width}x${height}px - ${(base64Data.length / 1024).toFixed(0)}KB em Base64)`);
+                    console.log(`📷 Otimizada em Canvas (max 1600px / q=0.8): ${file.name} (${width}x${height}px - ${(base64Data.length / 1024).toFixed(0)}KB em Base64)`);
                     resolve(base64Data);
                 };
                 
@@ -1689,7 +1689,7 @@
 
         let isUploading = false;
 
-        // Envia todas as fotos selecionadas para a Automação via JSON Base64 (Leitura ultraleve sem multipart)
+        // Envia todas as fotos selecionadas para a Automação via JSON Base64 (Otimizado para Mobile com Timeout de 120s)
         btnProcess.addEventListener('click', async (e) => {
             if (e) {
                 e.preventDefault();
@@ -1702,14 +1702,14 @@
                 btnProcess.disabled = true;
                 btnProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processando...';
                 loader.style.display = 'block';
-                showToast('Otimizando fotos em Base64...', 'info');
+                showToast('Otimizando fotos no celular em Canvas...', 'info');
 
                 const filesToUpload = selectedFiles.slice(0, 3);
                 const base64Images = [];
 
                 for (let i = 0; i < filesToUpload.length; i++) {
-                    showToast(`Otimizando foto ${i + 1} de ${filesToUpload.length} (800px)...`, 'info');
-                    const b64 = await compressImageToBase64(filesToUpload[i], 800, 800, 0.55);
+                    showToast(`Otimizando foto ${i + 1} de ${filesToUpload.length} (máx 1600px / q=0.8)...`, 'info');
+                    const b64 = await compressImageToBase64(filesToUpload[i], 1600, 1600, 0.8);
                     if (b64) base64Images.push(b64);
                 }
 
@@ -1717,15 +1717,25 @@
                     throw new Error('Nenhuma foto válida para envio.');
                 }
 
-                showToast('Enviando payload JSON otimizado...', 'info');
+                showToast('Enviando fotos otimizadas para o servidor...', 'info');
 
-                const response = await fetch('/api/upload', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ images: base64Images })
-                });
+                // Timeout estendido de 120 segundos para conexões móveis (3G/4G/5G)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+                let response;
+                try {
+                    response = await fetch('/api/upload', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        signal: controller.signal,
+                        body: JSON.stringify({ images: base64Images })
+                    });
+                } finally {
+                    clearTimeout(timeoutId);
+                }
                 
                 if (response.status === 401 || response.status === 403) {
                     showAuthErrorAndRedirect('Sessão expirada. Faça login novamente.');

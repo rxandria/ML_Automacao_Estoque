@@ -161,26 +161,12 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         print(f"   Confiança da IA: {product_data.get('confidence_score')}")
         print(f"   Revisão Manual Necessária: {product_data.get('requires_manual_review')}")
         
-        # 4. Sincronização IMEDIATA no Google Sheets (Garante a gravação antes dos uploads de mídia no Drive)
         requires_review = product_data.get("requires_manual_review", False)
         status = "REVISAO_MANUAL" if requires_review else "HOMOLOGADO (DRY RUN)"
         reason = product_data.get("review_reason", "Aprovado via IA") if requires_review else "Validação do payload aprovada via IA."
 
-        print(f"\n📊 Passo 4: Gravando registro do produto imediatamente no Google Sheets (Status: {status})...")
-        sheets_ok = add_product_to_sheet(
-            sheet_id=sheet_id,
-            product_data=product_data,
-            status=status,
-            review_needed=requires_review,
-            review_reason=reason,
-            creds=creds,
-            product_id=product_id
-        )
-        if sheets_ok:
-            print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso (Antes dos Uploads)!")
-
-        # 5. Upload sequencial leve das fotos para o Google Drive com fundo branco puro (#FFFFFF)
-        print("\n📷 Passo 5: Otimizando fundo branco (#FFFFFF) e enviando fotos para o Google Drive...")
+        # 4. Upload sequencial das fotos para o Google Drive com fundo branco puro (#FFFFFF)
+        print("\n📷 Passo 4: Otimizando fundo branco (#FFFFFF) e enviando fotos para o Google Drive...")
         public_urls = []
         for idx, img_path in enumerate(image_paths):
             print(f"🚀 Otimizando e enviando foto {idx+1}/{len(image_paths)} para o Google Drive...")
@@ -194,6 +180,20 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         concatenated_urls = ", ".join(public_urls) if public_urls else ""
         product_data["url_fotos"] = concatenated_urls
         drive_thumb = public_urls[0] if public_urls else ""
+
+        # 5. Sincronização no Google Sheets com a URL das Fotos salva na planilha
+        print(f"\n📊 Passo 5: Gravando registro do produto no Google Sheets (Status: {status})...")
+        sheets_ok = add_product_to_sheet(
+            sheet_id=sheet_id,
+            product_data=product_data,
+            status=status,
+            review_needed=requires_review,
+            review_reason=reason,
+            creds=creds,
+            product_id=product_id
+        )
+        if sheets_ok:
+            print(f"📊 [GOOGLE SHEETS SYNC OK] Registro com URLs ({concatenated_urls}) gravado no Sheets com sucesso!")
 
         # 6. Atualização final do cache local de produtos com as URLs do Google Drive
         local_item = {
