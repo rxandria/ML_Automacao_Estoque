@@ -314,9 +314,16 @@ def setup_google_sheet(folder_id=None, creds=None):
 def upload_product_photo(file_input, photos_folder_id, creds):
     """
     Faz upload de foto para o Google Drive com consumo de RAM reduzido (< 5MB).
+    Salva diretamente dentro de photos_folder_id (parents) com supportsAllDrives=True.
     Retorna a URL pública do Google Drive ou None em caso de falha (sem gerar URLs mock fictícias).
     """
-    if not creds or not photos_folder_id:
+    env_folder_id = get_sanitized_env("DRIVE_FOLDER_ID")
+    folder_id = None
+    if photos_folder_id and isinstance(photos_folder_id, str):
+        folder_id = photos_folder_id.strip()
+    folder_id = folder_id or env_folder_id or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+
+    if not creds or not folder_id:
         print("❌ [GOOGLE DRIVE ERROR] Credenciais ou folder_id nulos. Upload cancelado (Nenhum link mock gerado).")
         return None
 
@@ -344,7 +351,7 @@ def upload_product_photo(file_input, photos_folder_id, creds):
             del clean_b
             gc.collect()
 
-        print(f"📷 [GOOGLE DRIVE] Enviando '{filename}' via streaming leve (chunk=256KB, resumable=False)...")
+        print(f"📷 [GOOGLE DRIVE] Enviando '{filename}' para a pasta '{folder_id}' via streaming leve...")
         service = build("drive", "v3", credentials=creds)
         
         media = MediaFileUpload(
@@ -356,21 +363,26 @@ def upload_product_photo(file_input, photos_folder_id, creds):
         
         file_metadata = {
             'name': filename,
-            'parents': [photos_folder_id]
+            'parents': [folder_id]
         }
         
         file_obj = service.files().create(
             body=file_metadata, 
             media_body=media, 
+            supportsAllDrives=True,
             fields='id, webViewLink'
         ).execute()
         
         file_id = file_obj.get('id')
-        print(f"📷 [GOOGLE DRIVE SUCCESS] Upload concluído com sucesso! ID: {file_id}")
+        print(f"📷 [GOOGLE DRIVE SUCCESS] Upload concluído com sucesso na pasta '{folder_id}'! ID: {file_id}")
         
         try:
             permission = {'type': 'anyone', 'role': 'reader'}
-            service.permissions().create(fileId=file_id, body=permission).execute()
+            service.permissions().create(
+                fileId=file_id, 
+                body=permission, 
+                supportsAllDrives=True
+            ).execute()
         except Exception as perm_err:
             print(f"⚠️ Permissão pública no Drive: {perm_err}")
 

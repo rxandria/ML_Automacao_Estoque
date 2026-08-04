@@ -111,7 +111,33 @@ class TestCloudRunResilience(unittest.TestCase):
         saved_prod = next((p for p in main.LOCAL_PRODUCTS if p.get("id") == "prod_test_123"), None)
         self.assertIsNotNone(saved_prod)
         self.assertEqual(saved_prod["id"], "prod_test_123")
-        print("✅ [TEST 4 PASSED] Pipeline de cadastros e triagem executado com sucesso sem duplicação!")
+    def test_05_upload_photo_shared_drive(self):
+        print("\n🧪 [TEST 5] Testando upload para pasta pai no Drive com supportsAllDrives=True...")
+        from scripts.drive_sheets_sync import upload_product_photo
+
+        mock_creds = MagicMock()
+        test_file_path = os.path.join("temp_uploads", "unit_test_img.jpg")
+
+        with patch("scripts.drive_sheets_sync.build") as mock_build:
+            mock_service = MagicMock()
+            mock_build.return_value = mock_service
+
+            mock_create = MagicMock()
+            mock_create.execute.return_value = {
+                "id": "file_123_abc",
+                "webViewLink": "https://drive.google.com/file/d/file_123_abc/view"
+            }
+            mock_service.files().create.return_value = mock_create
+
+            url = upload_product_photo(test_file_path, "  folder_target_456  ", mock_creds)
+
+            mock_service.files().create.assert_called_once()
+            call_kwargs = mock_service.files().create.call_args[1]
+            self.assertTrue(call_kwargs.get("supportsAllDrives"))
+            self.assertEqual(call_kwargs.get("body", {}).get("parents"), ["folder_target_456"])
+            self.assertEqual(url, "https://drive.google.com/file/d/file_123_abc/view")
+
+        print("✅ [TEST 5 PASSED] Upload para pasta compartilhada validado com parents e supportsAllDrives=True!")
 
 if __name__ == "__main__":
     unittest.main()
