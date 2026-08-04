@@ -178,18 +178,21 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
         if sheets_ok:
             print("📊 [GOOGLE SHEETS SYNC OK] Google Sheets Sync Concluído com Sucesso (Antes dos Uploads)!")
 
-        # 5. Upload sequencial leve das fotos para o Google Drive
-        print("\n📷 Passo 5: Enviando fotos do produto para o Google Drive...")
+        # 5. Upload sequencial leve das fotos para o Google Drive com fundo branco puro (#FFFFFF)
+        print("\n📷 Passo 5: Otimizando fundo branco (#FFFFFF) e enviando fotos para o Google Drive...")
         public_urls = []
         for idx, img_path in enumerate(image_paths):
-            print(f"🚀 Enviando foto {idx+1}/{len(image_paths)} para o Google Drive...")
-            url = upload_product_photo(img_path, photos_folder_id, creds)
-            public_urls.append(url)
+            print(f"🚀 Otimizando e enviando foto {idx+1}/{len(image_paths)} para o Google Drive...")
+            processed_img = optimize_image_for_ml(img_path, remove_bg=True)
+            target_upload_path = processed_img if processed_img and os.path.exists(processed_img) else img_path
+            url = upload_product_photo(target_upload_path, photos_folder_id, creds)
+            if url:
+                public_urls.append(url)
             gc.collect()
 
-        concatenated_urls = ", ".join(public_urls)
+        concatenated_urls = ", ".join(public_urls) if public_urls else ""
         product_data["url_fotos"] = concatenated_urls
-        drive_thumb = public_urls[0] if public_urls else concatenated_urls
+        drive_thumb = public_urls[0] if public_urls else ""
 
         # 6. Atualização final do cache local de produtos com as URLs do Google Drive
         local_item = {
@@ -205,7 +208,7 @@ def run_pipeline(image_paths, dry_run=True, product_id=None):
             "review_needed": requires_review,
             "motivo_revisao": reason,
             "date": format_brasilia_time("%d/%m/%Y %H:%M:%S"),
-            "local_thumb": drive_thumb,
+            "local_thumb": drive_thumb or ("/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg"),
             "original_filename": os.path.basename(main_image)
         }
         
@@ -667,9 +670,10 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 gc.collect()
 
                 # Persistência imediata e garantida no cache local de produtos (salva no disco ANTES de responder ao socket)
+                product_id = f"MLB{uuid.uuid4().hex[:10].upper()}"
                 initial_local_item = {
                     "row_num": len(LOCAL_PRODUCTS) + 2,
-                    "id": f"MLB{uuid.uuid4().hex[:10].upper()}",
+                    "id": product_id,
                     "titulo": product_data.get("titulo", "Produto Enviado"),
                     "categoria": product_data.get("categoria", "Outros"),
                     "preco": product_data.get("preco_sugerido", 50.0),
@@ -683,7 +687,7 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                     "local_thumb": "/temp_uploads/" + os.path.basename(main_image) if os.path.exists(main_image) else "/temp_uploads/test_product.jpg",
                     "original_filename": os.path.basename(main_image)
                 }
-                LOCAL_PRODUCTS[:] = [p for p in LOCAL_PRODUCTS if p.get("id") != initial_local_item["id"]]
+                LOCAL_PRODUCTS[:] = [p for p in LOCAL_PRODUCTS if p.get("id") != product_id]
                 LOCAL_PRODUCTS.append(initial_local_item)
                 save_local_products(LOCAL_PRODUCTS)
                 gc.collect()
@@ -692,7 +696,7 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                 import threading
                 def async_pipeline_worker():
                     try:
-                        run_pipeline(saved_paths, dry_run=True)
+                        run_pipeline(saved_paths, dry_run=True, product_id=product_id)
                     except Exception as err:
                         import traceback
                         print(f"❌ Erro no pipeline assíncrono: {err}")

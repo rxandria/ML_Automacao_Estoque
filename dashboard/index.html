@@ -505,6 +505,18 @@
             color: #f87171;
         }
 
+        .action-btn.disabled, .action-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            color: var(--text-secondary);
+            background-color: transparent;
+        }
+
+        .action-btn.disabled:hover, .action-btn:disabled:hover {
+            background-color: transparent;
+            transform: none;
+        }
+
         /* Modal styling */
         .modal-overlay {
             position: fixed;
@@ -1252,13 +1264,14 @@
 
         // Auxiliar: Converte link do Google Drive para visualização direta de imagem via thumbnail endpoint
         function getDirectDriveImgUrl(driveUrl) {
-            if (!driveUrl) return '';
+            if (!driveUrl || driveUrl.includes('mock_')) return '';
             const firstUrl = driveUrl.split(',')[0].trim();
+            if (!firstUrl || firstUrl.includes('mock_')) return '';
             const match = firstUrl.match(/\/file\/d\/([^\/]+)/) || firstUrl.match(/id=([^&]+)/);
             if (match && match[1]) {
                 return `https://drive.google.com/thumbnail?id=${match[1]}&sz=w200`;
             }
-            return firstUrl;
+            return firstUrl.startsWith('http') ? firstUrl : '';
         }
 
         // Toast Helper
@@ -1352,13 +1365,27 @@
                         </button>
                     `;
                 }
+                let hasValidDriveUrl = false;
+                let firstUrl = '';
                 if (prod.url_fotos) {
-                    // Se houver mais de uma foto, pega a primeira URL para o link
-                    const firstUrl = prod.url_fotos.split(',')[0].trim();
+                    const candidateUrl = prod.url_fotos.split(',')[0].trim();
+                    if (candidateUrl && !candidateUrl.includes('mock_') && (candidateUrl.startsWith('http://') || candidateUrl.startsWith('https://'))) {
+                        hasValidDriveUrl = true;
+                        firstUrl = candidateUrl;
+                    }
+                }
+
+                if (hasValidDriveUrl) {
                     actionsHtml += `
-                        <a href="${firstUrl}" target="_blank" class="action-btn view-link" title="Ver no Drive">
+                        <a href="${firstUrl}" target="_blank" class="action-btn view-link" title="Ver no Google Drive">
                             <i class="fa-solid fa-up-right-from-square"></i>
                         </a>
+                    `;
+                } else {
+                    actionsHtml += `
+                        <button class="action-btn disabled" disabled title="Imagem não sincronizada no Google Drive (Upload pendente ou erro de credenciais)">
+                            <i class="fa-solid fa-cloud-slash"></i>
+                        </button>
                     `;
                 }
                 
@@ -1660,12 +1687,20 @@
             });
         }
 
+        let isUploading = false;
+
         // Envia todas as fotos selecionadas para a Automação via JSON Base64 (Leitura ultraleve sem multipart)
-        btnProcess.addEventListener('click', async () => {
-            if (selectedFiles.length === 0) return;
+        btnProcess.addEventListener('click', async (e) => {
+            if (e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            if (isUploading || selectedFiles.length === 0 || btnProcess.disabled) return;
 
             try {
+                isUploading = true;
                 btnProcess.disabled = true;
+                btnProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processando...';
                 loader.style.display = 'block';
                 showToast('Otimizando fotos em Base64...', 'info');
 
@@ -1677,7 +1712,6 @@
                     const b64 = await compressImageToBase64(filesToUpload[i], 800, 800, 0.55);
                     if (b64) base64Images.push(b64);
                 }
-
 
                 if (base64Images.length === 0) {
                     throw new Error('Nenhuma foto válida para envio.');
@@ -1697,7 +1731,6 @@
                     showAuthErrorAndRedirect('Sessão expirada. Faça login novamente.');
                     return;
                 }
-
 
                 if (!response.ok) {
                     const errData = await response.json().catch(() => ({}));
@@ -1725,8 +1758,10 @@
                 console.error(error);
                 showToast('Falha no processamento da imagem: ' + error.message, 'danger');
             } finally {
+                isUploading = false;
                 btnProcess.disabled = false;
                 loader.style.display = 'none';
+                btnProcess.innerHTML = `<i class="fa-solid fa-rocket"></i> Enviar para Automação (${selectedFiles.length} Fotos)`;
             }
         });
 

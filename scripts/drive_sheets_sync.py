@@ -44,42 +44,82 @@ SCOPES = [
 CREDENTIALS_FILE = "config/credentials.json"
 TOKEN_FILE = "config/token.json"
 
-# Cabeçalhos da planilha
 HEADERS = [
     "ID Produto", "Título", "Categoria", "Preço (R$)", 
     "Estoque", "Condição", "URL Fotos", "Status ML", 
     "Revisão Necessária", "Motivo Revisão", "Data Criação"
 ]
 
+from google.oauth2 import service_account
+
 def authenticate(allow_interactive=False):
     creds = None
     import traceback
+    import json
     
-    # 1. Tenta carregar as credenciais a partir da variável de ambiente em produção
+    # 1. Tenta Service Account a partir de GOOGLE_CREDENTIALS_JSON (String JSON de Service Account em ambiente Cloud Run)
+    google_credentials_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if google_credentials_json:
+        try:
+            creds_data = json.loads(google_credentials_json)
+            if isinstance(creds_data, dict) and creds_data.get("type") == "service_account":
+                creds = service_account.Credentials.from_service_account_info(creds_data, scopes=SCOPES)
+                print("🔑 [GOOGLE AUTH SUCCESS] Service Account carregada com sucesso via GOOGLE_CREDENTIALS_JSON.")
+                return creds
+            elif isinstance(creds_data, dict) and creds_data.get("type") == "authorized_user":
+                creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+                print("🔑 [GOOGLE AUTH SUCCESS] Authorized User carregado via GOOGLE_CREDENTIALS_JSON.")
+                return creds
+            elif isinstance(creds_data, dict) and ("installed" in creds_data or "web" in creds_data):
+                # OAuth Client Secret JSON fornecido via env var
+                if allow_interactive:
+                    flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
+                    creds = flow.run_local_server(port=0)
+                    return creds
+                else:
+                    print("⚠️ [GOOGLE AUTH WARNING] Client Config OAuth recebido em GOOGLE_CREDENTIALS_JSON, mas ambiente não é interativo (necessária Service Account).")
+        except Exception as e:
+            print(f"❌ [GOOGLE AUTH ERROR] Erro ao decodificar GOOGLE_CREDENTIALS_JSON: {e}")
+            traceback.print_exc()
+            creds = None
+
+    # 2. Tenta Service Account a partir de GOOGLE_APPLICATION_CREDENTIALS (Caminho para arquivo JSON)
+    app_credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if app_credentials_path and os.path.exists(app_credentials_path):
+        try:
+            creds = service_account.Credentials.from_service_account_file(app_credentials_path, scopes=SCOPES)
+            print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account carregada do arquivo: {app_credentials_path}")
+            return creds
+        except Exception as e:
+            print(f"❌ [GOOGLE AUTH ERROR] Erro ao carregar Service Account do arquivo {app_credentials_path}: {e}")
+            traceback.print_exc()
+            creds = None
+
+    # 3. Tenta carregar credenciais de usuário OAuth via GOOGLE_TOKEN_JSON
     google_token_json = os.environ.get("GOOGLE_TOKEN_JSON")
     if google_token_json:
         try:
-            import json
             token_data = json.loads(google_token_json)
             creds = Credentials.from_authorized_user_info(token_data, SCOPES)
-            print("🔑 Credenciais do Google carregadas com sucesso de GOOGLE_TOKEN_JSON.")
+            print("🔑 [GOOGLE AUTH SUCCESS] Credenciais OAuth carregadas de GOOGLE_TOKEN_JSON.")
         except Exception as e:
-            print(f"⚠️ [GOOGLE AUTH ERROR] Erro ao decodificar/carregar GOOGLE_TOKEN_JSON: {e}")
+            print(f"⚠️ [GOOGLE AUTH ERROR] Erro ao carregar GOOGLE_TOKEN_JSON: {e}")
             traceback.print_exc()
             creds = None
-            
-    # 2. Fallback para carregar do arquivo local token.json
+
+    # 4. Fallback para carregar do arquivo local token.json
     if not creds and os.path.exists(TOKEN_FILE):
         try:
             creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            print("🔑 Credenciais do Google carregadas com sucesso do token.json local.")
+            print("🔑 Credenciais do Google carregadas do token.json local.")
         except Exception as e:
             print(f"⚠️ [GOOGLE AUTH ERROR] Erro ao carregar token.json local: {e}")
             traceback.print_exc()
             creds = None
-            
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+
+    # 5. Validação / Renovação de token
+    if creds and not creds.valid:
+        if creds.expired and getattr(creds, "refresh_token", None):
             try:
                 creds.refresh(Request())
                 print("🔄 Token de acesso do Google renovado com sucesso.")
@@ -87,47 +127,39 @@ def authenticate(allow_interactive=False):
                 print(f"⚠️ [GOOGLE AUTH ERROR] Erro ao renovar token do Google: {e}")
                 traceback.print_exc()
                 creds = None
-                
-        if not creds or not creds.valid:
-            if not allow_interactive:
-                print("⚠️ [GOOGLE AUTH WARNING] Credenciais do Google nulas, expiradas ou ausentes em ambiente não interativo.")
-                return None
-            
-            # Se for interativo, tenta carregar credentials
-            google_credentials_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-            if google_credentials_json:
+
+    if not creds or not creds.valid:
+        if not allow_interactive:
+            print("❌ [GOOGLE AUTH ERROR] Credenciais do Google não configuradas ou inválidas (Defina GOOGLE_CREDENTIALS_JSON ou GOOGLE_APPLICATION_CREDENTIALS).")
+            return None
+
+        # Interativo local
+        if os.path.exists(CREDENTIALS_FILE):
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                creds = flow.run_local_server(port=0)
                 try:
-                    import json
-                    client_config = json.loads(google_credentials_json)
-                    flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
+                    with open(TOKEN_FILE, "w") as token:
+                        token.write(creds.to_json())
                 except Exception as e:
-                    print(f"⚠️ Erro ao carregar GOOGLE_CREDENTIALS_JSON: {e}")
-                    traceback.print_exc()
-                    flow = None
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    CREDENTIALS_FILE, SCOPES
-                )
-                
-            creds = flow.run_local_server(port=0)
-            
-        # Tenta salvar localmente se não for produção
-        try:
-            with open(TOKEN_FILE, "w") as token:
-                token.write(creds.to_json())
-        except Exception as e:
-            print(f"⚠️ Erro ao salvar token.json localmente: {e}")
-            
+                    print(f"⚠️ Erro ao salvar token.json localmente: {e}")
+            except Exception as e:
+                print(f"❌ Erro no fluxo interativo local: {e}")
+                creds = None
+
     return creds
 
 def setup_drive_structure(folder_id, creds):
     """
     Verifica se a pasta 'Fotos_Produtos' existe dentro de folder_id.
-    Se não existir, cria e retorna o ID.
+    Lê a variável de ambiente DRIVE_FOLDER_ID como prioridade.
     """
+    env_folder_id = os.environ.get("DRIVE_FOLDER_ID")
+    folder_id = env_folder_id or folder_id or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+
     if not creds:
-        print("⚠️ [GOOGLE DRIVE] Credenciais ausentes. Retornando folder_id simulado.")
-        return folder_id or "mock_photos_folder_id"
+        print("❌ [GOOGLE DRIVE ERROR] Credenciais ausentes. Impossível configurar pasta no Google Drive.")
+        return None
     try:
         service = build("drive", "v3", credentials=creds)
         
@@ -158,19 +190,26 @@ def setup_drive_structure(folder_id, creds):
         import traceback
         print(f"❌ [GOOGLE DRIVE ERROR] Erro ao configurar estrutura do Drive: {error}")
         traceback.print_exc()
-        return folder_id or "mock_photos_folder_id"
+        return None
 
 def setup_google_sheet(folder_id, creds):
     """
-    Verifica se a planilha 'Controle_Estoque_MercadoLivre' existe na pasta.
-    Se não existir, cria e insere os cabeçalhos atualizados.
+    Verifica se a planilha existe ou retorna a planilha configurada via SPREADSHEET_ID.
     """
+    env_sheet_id = os.environ.get("SPREADSHEET_ID")
+    if env_sheet_id:
+        print(f"📄 [GOOGLE SHEETS] Usando SPREADSHEET_ID das variáveis de ambiente: {env_sheet_id}")
+        return env_sheet_id
+
     if not creds:
-        print("⚠️ [GOOGLE SHEETS] Credenciais ausentes. Retornando sheet_id simulado.")
-        return "mock_sheet_id"
+        print("❌ [GOOGLE SHEETS ERROR] Credenciais ausentes e SPREADSHEET_ID não definido. Desativando sincronização de planilha.")
+        return None
     try:
         service = build("drive", "v3", credentials=creds)
         
+        env_folder_id = os.environ.get("DRIVE_FOLDER_ID")
+        folder_id = env_folder_id or folder_id or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+
         query = (
             f"name = 'Controle_Estoque_MercadoLivre' and '{folder_id}' in parents "
             f"and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
@@ -218,20 +257,19 @@ def setup_google_sheet(folder_id, creds):
         import traceback
         print(f"❌ [GOOGLE SHEETS ERROR] Erro ao configurar a Planilha: {error}")
         traceback.print_exc()
-        return "mock_sheet_id"
+        return None
 
 def upload_product_photo(file_input, photos_folder_id, creds):
     """
-    Faz upload de foto para o Google Drive com consumo de RAM estritamente minúsculo (< 5MB).
-    Salva temporariamente em disco e usa MediaFileUpload com chunksize=256*1024 e resumable=False.
+    Faz upload de foto para o Google Drive com consumo de RAM reduzido (< 5MB).
+    Retorna a URL pública do Google Drive ou None em caso de falha (sem gerar URLs mock fictícias).
     """
+    if not creds or not photos_folder_id:
+        print("❌ [GOOGLE DRIVE ERROR] Credenciais ou folder_id nulos. Upload cancelado (Nenhum link mock gerado).")
+        return None
+
     random_id = uuid.uuid4().hex[:6]
     filename = f"foto_{format_brasilia_time('%Y%m%d_%H%M%S')}_{random_id}.jpg"
-    fallback_url = f"https://drive.google.com/file/d/mock_{filename}/view"
-    
-    if not creds:
-        print(f"⚠️ [GOOGLE DRIVE] Credenciais ausentes. Retornando URL simulada '{fallback_url}'.")
-        return fallback_url
 
     temp_path = None
     media = None
@@ -239,12 +277,10 @@ def upload_product_photo(file_input, photos_folder_id, creds):
     created_temp_file = False
 
     try:
-        # Se for um caminho de arquivo em disco existente
         if isinstance(file_input, str) and os.path.exists(file_input):
             temp_path = file_input
             filename = os.path.basename(file_input)
         else:
-            # Se for string base64 ou bytes, decodifica diretamente para um arquivo temporário em disco
             from scripts.vision_processor import clean_and_decode_image_bytes
             clean_b = clean_and_decode_image_bytes(file_input)
             
@@ -259,7 +295,6 @@ def upload_product_photo(file_input, photos_folder_id, creds):
         print(f"📷 [GOOGLE DRIVE] Enviando '{filename}' via streaming leve (chunk=256KB, resumable=False)...")
         service = build("drive", "v3", credentials=creds)
         
-        # Upload ultraleve em blocos de 256KB diretamente do disco sem carregar tudo em RAM
         media = MediaFileUpload(
             temp_path, 
             mimetype='image/jpeg', 
@@ -281,7 +316,6 @@ def upload_product_photo(file_input, photos_folder_id, creds):
         file_id = file_obj.get('id')
         print(f"📷 [GOOGLE DRIVE SUCCESS] Upload concluído com sucesso! ID: {file_id}")
         
-        # Define permissão pública para visualização
         try:
             permission = {'type': 'anyone', 'role': 'reader'}
             service.permissions().create(fileId=file_id, body=permission).execute()
@@ -295,10 +329,9 @@ def upload_product_photo(file_input, photos_folder_id, creds):
         import traceback
         print(f"❌ [GOOGLE DRIVE ERROR] Falha ao realizar upload para o Google Drive: {error}")
         traceback.print_exc()
-        return fallback_url
+        return None
 
     finally:
-        # Destruição estrita de objetos de mídia, serviço e remoção do arquivo temporário do Drive
         del media, service
         if created_temp_file and temp_path and os.path.exists(temp_path):
             try:
@@ -307,15 +340,12 @@ def upload_product_photo(file_input, photos_folder_id, creds):
                 pass
         gc.collect()
 
-
-
 def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_reason, creds, product_id=""):
     """
     Adiciona uma nova linha com os dados de processamento do produto na planilha.
-    Formatos de status permitidos: "PENDENTE", "REVISAO_MANUAL", "HOMOLOGADO (DRY RUN)", "PUBLICADO", "ERRO".
     """
-    if not creds or sheet_id == "mock_sheet_id":
-        print(f"⚠️ [GOOGLE SHEETS] Credenciais nulas ou planilha simulada. Ignorando gravação remota no Sheets para '{product_data.get('titulo')}'")
+    if not creds or not sheet_id or sheet_id == "mock_sheet_id":
+        print(f"❌ [GOOGLE SHEETS ERROR] Credenciais ou planilha nulos. Ignorando gravação no Sheets para '{product_data.get('titulo')}'")
         return False
     try:
         sheets_service = build("sheets", "v4", credentials=creds)

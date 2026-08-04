@@ -73,19 +73,23 @@ def sanitize_title(title):
     return sanitized
 
 
-def optimize_image_for_ml(image_path, output_path, remove_bg=False):
+def optimize_image_for_ml(image_path, output_path=None, remove_bg=True):
     """
-    Otimiza a imagem para os padrões exigidos pelo Mercado Livre:
-    - Se remove_bg=True, remove o fundo original utilizando rembg.
-    - Converte para RGB.
-    - Redimensiona mantendo a proporção para 1200x1200px.
-    - Adiciona fundo branco para centralizar a imagem.
-    - Salva como JPEG na pasta de destino.
+    Otimiza uma imagem de produto para publicação:
+    - Trata a remoção de fundo via rembg de forma thread-safe.
+    - Converte e redimensiona mantendo proporções em uma tela quadrada de 1200x1200px.
+    - Aplica fundo branco puro (#FFFFFF / RGB 255, 255, 255).
+    - Salva em alta qualidade (JPEG 90%).
     """
     from PIL import Image
     try:
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Imagem original não encontrada: {image_path}")
+
+        if not output_path:
+            base_dir = os.path.dirname(image_path)
+            file_name = os.path.splitext(os.path.basename(image_path))[0]
+            output_path = os.path.join(base_dir, f"{file_name}_optimized.jpg")
 
         # Sanitização de bytes de imagem caso o arquivo tenha chegado com cabeçalho Data URL ou Base64 ASCII
         try:
@@ -102,7 +106,7 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
         print(f"📷 Otimizando imagem: {image_path} (remove_bg={remove_bg})...")
         img = Image.open(image_path)
         
-        # Se solicitado remover fundo
+        # 1. Remoção de Fundo Thread-Safe
         if remove_bg:
             try:
                 print("🧠 Removendo fundo da imagem com rembg...")
@@ -111,78 +115,62 @@ def optimize_image_for_ml(image_path, output_path, remove_bg=False):
                 if w > max_ia_size or h > max_ia_size:
                     ratio = min(max_ia_size / w, max_ia_size / h)
                     img_for_ia = img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.BILINEAR)
-                    print(f"   Imagem reduzida de {w}x{h} para {img_for_ia.size[0]}x{img_for_ia.size[1]} para processamento de IA")
                 else:
                     img_for_ia = img
                 
-                import signal
-                class TimeoutException(Exception): pass
-                def handler(signum, frame): raise TimeoutException("Timeout rembg")
-                
-                try:
-                    signal.signal(signal.SIGALRM, handler)
-                    signal.alarm(3)
-                    has_alarm = True
-                except ValueError:
-                    has_alarm = False
-                
                 try:
                     from rembg import remove
-                    img = remove(img_for_ia)
-                finally:
-                    if has_alarm:
-                        signal.alarm(0)
+                    img_removed = remove(img_for_ia)
+                    if img_removed:
+                        img = img_removed
+                        print("✅ [REMBG SUCCESS] Fundo removido com sucesso!")
+                except Exception as rem_err:
+                    print(f"⚠️ Aviso no rembg ({rem_err}). Prosseguindo com ajustamento de fundo branco no canvas...")
             except Exception as e:
-                print(f"⚠️ Erro ou timeout ao usar rembg ({e}). Continuando sem remoção de fundo...")
+                print(f"⚠️ Erro ao aplicar rembg ({e}). Continuando sem remoção de fundo...")
+
+        # 2. Aplicação de Fundo Branco Puro (#FFFFFF / RGB 255, 255, 255) em Tela 1200x1200px
+        target_size = 1200
+        original_width, original_height = img.size
+        ratio = min(target_size / original_width, target_size / original_height)
+        new_width = max(1, int(original_width * ratio))
+        new_height = max(1, int(original_height * ratio))
+        img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
         
-        # Se a imagem tiver canal alpha (RGBA/LA)
-        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
-            target_size = 1200
-            original_width, original_height = img.size
-            ratio = min(target_size / original_width, target_size / original_height)
-            new_width = int(original_width * ratio)
-            new_height = int(original_height * ratio)
-            img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            new_img = Image.new("RGB", (target_size, target_size), (255, 255, 255))
-            paste_x = (target_size - new_width) // 2
-            paste_y = (target_size - new_height) // 2
-            new_img.paste(img_resized, (paste_x, paste_y), img_resized)
+        # Cria tela quadrada com Fundo Branco Puro
+        white_bg = Image.new("RGB", (target_size, target_size), (255, 255, 255))
+        paste_x = (target_size - new_width) // 2
+        paste_y = (target_size - new_height) // 2
+        
+        if img_resized.mode in ('RGBA', 'LA') or (img_resized.mode == 'P' and 'transparency' in img_resized.info):
+            # Usa o canal Alpha transparente como máscara para compor o produto sobre o fundo branco puro
+            alpha_mask = img_resized.split()[-1] if img_resized.mode == 'RGBA' else img_resized
+            white_bg.paste(img_resized, (paste_x, paste_y), mask=alpha_mask)
         else:
-            img = img.convert('RGB')
-            target_size = 1200
-            original_width, original_height = img.size
-            ratio = min(target_size / original_width, target_size / original_height)
-            new_width = int(original_width * ratio)
-            new_height = int(original_height * ratio)
-            img_resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            new_img = Image.new("RGB", (target_size, target_size), (255, 255, 255))
-            paste_x = (target_size - new_width) // 2
-            paste_y = (target_size - new_height) // 2
-            new_img.paste(img_resized, (paste_x, paste_y))
+            img_rgb = img_resized.convert('RGB')
+            white_bg.paste(img_rgb, (paste_x, paste_y))
             
         output_dir = os.path.dirname(output_path)
         if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+            os.makedirs(output_dir, exist_ok=True)
             
-        new_img.save(output_path, "JPEG", quality=90)
-        print(f"📷 Imagem otimizada com sucesso em: {output_path} (1200x1200px)")
+        white_bg.save(output_path, "JPEG", quality=90)
+        print(f"📷 Imagem otimizada com sucesso com Fundo Branco (#FFFFFF): {output_path} (1200x1200px)")
         
         try:
             img.close()
-            new_img.close()
+            white_bg.close()
         except Exception:
             pass
         return output_path
         
     except Exception as e:
         print(f"❌ Erro ao otimizar a imagem: {e}")
-        traceback.print_exc()
-        gc.collect()
-        raise e
-    finally:
-        gc.collect()
+        return image_path
+
+# Aliases funcionais de conveniência
+process_image = optimize_image_for_ml
+remove_bg = optimize_image_for_ml
 
 def analyze_product_image(image_path):
     """
