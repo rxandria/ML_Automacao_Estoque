@@ -69,75 +69,75 @@ def authenticate(allow_interactive=False):
     import traceback
     import json
     
-    # 1. Tenta Service Account a partir de GOOGLE_CREDENTIALS_JSON (String JSON de Service Account em ambiente Cloud Run)
-    google_credentials_json = get_sanitized_env("GOOGLE_CREDENTIALS_JSON")
-    if google_credentials_json:
-        try:
-            creds_data = json.loads(google_credentials_json)
-            if isinstance(creds_data, dict) and creds_data.get("type") == "service_account":
-                creds = service_account.Credentials.from_service_account_info(creds_data, scopes=SCOPES)
-                impersonate_user = get_sanitized_env("GOOGLE_IMPERSONATE_USER")
-                if impersonate_user:
-                    creds = creds.with_subject(impersonate_user)
-                    print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account personificando usuário: {impersonate_user}")
-                else:
-                    print("🔑 [GOOGLE AUTH SUCCESS] Service Account carregada com sucesso via GOOGLE_CREDENTIALS_JSON.")
-                return creds
-            elif isinstance(creds_data, dict) and creds_data.get("type") == "authorized_user":
-                creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
-                print("🔑 [GOOGLE AUTH SUCCESS] Authorized User carregado via GOOGLE_CREDENTIALS_JSON.")
-                return creds
-            elif isinstance(creds_data, dict) and ("installed" in creds_data or "web" in creds_data):
-                # OAuth Client Secret JSON fornecido via env var
-                if allow_interactive:
-                    flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
-                    creds = flow.run_local_server(port=0)
-                    return creds
-                else:
-                    print("⚠️ [GOOGLE AUTH WARNING] Client Config OAuth recebido em GOOGLE_CREDENTIALS_JSON, mas ambiente não é interativo (necessária Service Account).")
-        except Exception as e:
-            print(f"❌ [GOOGLE AUTH ERROR] Erro ao decodificar GOOGLE_CREDENTIALS_JSON: {e}")
-            traceback.print_exc()
-            creds = None
-
-    # 2. Tenta Service Account a partir de GOOGLE_APPLICATION_CREDENTIALS (Caminho para arquivo JSON)
-    app_credentials_path = get_sanitized_env("GOOGLE_APPLICATION_CREDENTIALS")
-    if app_credentials_path and os.path.exists(app_credentials_path):
-        try:
-            creds = service_account.Credentials.from_service_account_file(app_credentials_path, scopes=SCOPES)
-            impersonate_user = get_sanitized_env("GOOGLE_IMPERSONATE_USER")
-            if impersonate_user:
-                creds = creds.with_subject(impersonate_user)
-                print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account personificando usuário do arquivo: {impersonate_user}")
-            else:
-                print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account carregada do arquivo: {app_credentials_path}")
-            return creds
-        except Exception as e:
-            print(f"❌ [GOOGLE AUTH ERROR] Erro ao carregar Service Account do arquivo {app_credentials_path}: {e}")
-            traceback.print_exc()
-            creds = None
-
-    # 3. Tenta carregar credenciais de usuário OAuth via GOOGLE_TOKEN_JSON
+    # 1. Tenta credenciais de usuário OAuth via GOOGLE_TOKEN_JSON (Permite gravações em pastas pessoais do "Meu Drive")
     google_token_json = get_sanitized_env("GOOGLE_TOKEN_JSON")
     if google_token_json:
         try:
             token_data = json.loads(google_token_json)
-            creds = Credentials.from_authorized_user_info(token_data, SCOPES)
-            print("🔑 [GOOGLE AUTH SUCCESS] Credenciais OAuth carregadas de GOOGLE_TOKEN_JSON.")
+            if isinstance(token_data, dict):
+                if token_data.get("type") != "authorized_user":
+                    token_data["type"] = "authorized_user"
+                creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+                print("🔑 [GOOGLE AUTH SUCCESS] Credenciais OAuth de Usuário carregadas via GOOGLE_TOKEN_JSON.")
         except Exception as e:
             print(f"⚠️ [GOOGLE AUTH ERROR] Erro ao carregar GOOGLE_TOKEN_JSON: {e}")
-            traceback.print_exc()
             creds = None
 
-    # 4. Fallback para carregar do arquivo local token.json
-    if not creds and os.path.exists(TOKEN_FILE):
-        try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            print("🔑 Credenciais do Google carregadas do token.json local.")
-        except Exception as e:
-            print(f"⚠️ [GOOGLE AUTH ERROR] Erro ao carregar token.json local: {e}")
-            traceback.print_exc()
-            creds = None
+    # 2. Tenta GOOGLE_CREDENTIALS_JSON (String JSON em ambiente Cloud Run)
+    if not creds:
+        google_credentials_json = get_sanitized_env("GOOGLE_CREDENTIALS_JSON")
+        if google_credentials_json:
+            try:
+                creds_data = json.loads(google_credentials_json)
+                if isinstance(creds_data, dict) and creds_data.get("type") == "authorized_user":
+                    creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+                    print("🔑 [GOOGLE AUTH SUCCESS] Authorized User carregado via GOOGLE_CREDENTIALS_JSON.")
+                elif isinstance(creds_data, dict) and creds_data.get("type") == "service_account":
+                    creds = service_account.Credentials.from_service_account_info(creds_data, scopes=SCOPES)
+                    impersonate_user = get_sanitized_env("GOOGLE_IMPERSONATE_USER")
+                    if impersonate_user:
+                        creds = creds.with_subject(impersonate_user)
+                        print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account personificando usuário: {impersonate_user}")
+                    else:
+                        print("🔑 [GOOGLE AUTH SUCCESS] Service Account carregada com sucesso via GOOGLE_CREDENTIALS_JSON.")
+                elif isinstance(creds_data, dict) and ("installed" in creds_data or "web" in creds_data):
+                    if allow_interactive:
+                        flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
+                        creds = flow.run_local_server(port=0)
+                    else:
+                        print("⚠️ [GOOGLE AUTH WARNING] Client Config OAuth recebido em GOOGLE_CREDENTIALS_JSON, mas ambiente não é interativo.")
+            except Exception as e:
+                print(f"❌ [GOOGLE AUTH ERROR] Erro ao decodificar GOOGLE_CREDENTIALS_JSON: {e}")
+                creds = None
+
+    # 3. Tenta Service Account a partir de GOOGLE_APPLICATION_CREDENTIALS (Caminho para arquivo JSON)
+    if not creds:
+        app_credentials_path = get_sanitized_env("GOOGLE_APPLICATION_CREDENTIALS")
+        if app_credentials_path and os.path.exists(app_credentials_path):
+            try:
+                creds = service_account.Credentials.from_service_account_file(app_credentials_path, scopes=SCOPES)
+                impersonate_user = get_sanitized_env("GOOGLE_IMPERSONATE_USER")
+                if impersonate_user:
+                    creds = creds.with_subject(impersonate_user)
+                    print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account personificando usuário do arquivo: {impersonate_user}")
+                else:
+                    print(f"🔑 [GOOGLE AUTH SUCCESS] Service Account carregada do arquivo: {app_credentials_path}")
+            except Exception as e:
+                print(f"❌ [GOOGLE AUTH ERROR] Erro ao carregar Service Account do arquivo {app_credentials_path}: {e}")
+                creds = None
+
+    # 4. Fallback para carregar do arquivo local token.json ou config/token.json
+    token_paths = [TOKEN_FILE, os.path.join("config", "token.json")]
+    if not creds:
+        for tp in token_paths:
+            if os.path.exists(tp):
+                try:
+                    creds = Credentials.from_authorized_user_file(tp, SCOPES)
+                    print(f"🔑 Credenciais do Google carregadas do arquivo local: {tp}")
+                    break
+                except Exception as e:
+                    print(f"⚠️ [GOOGLE AUTH ERROR] Erro ao carregar {tp}: {e}")
+                    creds = None
 
     # 5. Validação / Renovação de token
     if creds and not creds.valid:
