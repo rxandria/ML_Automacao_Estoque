@@ -43,6 +43,7 @@ from scripts.drive_sheets_sync import (
     delete_drive_file,
     delete_sheet_row,
     get_first_sheet_name,
+    format_sheet_range,
     HEADERS
 )
 from scripts.ml_api_publisher import MLPublisher
@@ -302,7 +303,7 @@ def update_product_in_sheet(sheet_id, row_num, product_data, status, review_need
         sheet_name = get_first_sheet_name(sheets_service, sheet_id)
         sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id,
-            range=f"'{sheet_name}'!A{row_num}:K{row_num}",
+            range=format_sheet_range(sheet_name, f"A{row_num}:K{row_num}"),
             valueInputOption="USER_ENTERED",
             body=body
         ).execute()
@@ -469,7 +470,7 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         sheet_name = get_first_sheet_name(sheets_service, sheet_id)
                         result = sheets_service.spreadsheets().values().get(
                             spreadsheetId=sheet_id,
-                            range=f"'{sheet_name}'!A2:K200"
+                            range=format_sheet_range(sheet_name, "A2:K200")
                         ).execute()
                         
                         rows = result.get('values', [])
@@ -919,7 +920,7 @@ class DashboardHTTPHandler(BaseHTTPRequestHandler):
                         # Obtém a linha correspondente da planilha
                         result = sheets_service.spreadsheets().values().get(
                             spreadsheetId=sheet_id,
-                            range=f"'{sheet_name}'!A{row_num}:K{row_num}"
+                            range=format_sheet_range(sheet_name, f"A{row_num}:K{row_num}")
                         ).execute()
                         
                         rows = result.get('values', [])

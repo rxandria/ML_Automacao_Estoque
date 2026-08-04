@@ -192,9 +192,24 @@ def setup_drive_structure(folder_id, creds):
         traceback.print_exc()
         return None
 
+def format_sheet_range(sheet_name, cell_range):
+    """
+    Formata o intervalo de células para a API do Google Sheets.
+    Se o nome da aba não contiver espaços (ex: 'Sheet1' ou 'Controle_Estoque'), não coloca aspas simples adicionais.
+    Se contiver espaços (ex: 'Página 1'), utiliza aspas simples para delimitar o nome da aba.
+    """
+    if not sheet_name:
+        return cell_range
+    clean_name = str(sheet_name).strip("'\"")
+    if not clean_name:
+        return cell_range
+    if " " in clean_name:
+        return f"'{clean_name}'!{cell_range}"
+    return f"{clean_name}!{cell_range}"
+
 def get_first_sheet_name(sheets_service, spreadsheet_id, default="Sheet1"):
     """
-    Obtém dinamicamente o nome (title) da primeira aba disponível na planilha Google Sheets via
+    Obtém dinamicamente o nome limpo (title) da primeira aba disponível na planilha Google Sheets via
     spreadsheet.get('sheets')[0]['properties']['title'].
     """
     if not sheets_service or not spreadsheet_id or spreadsheet_id == "mock_sheet_id":
@@ -203,8 +218,9 @@ def get_first_sheet_name(sheets_service, spreadsheet_id, default="Sheet1"):
         spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
         sheets = spreadsheet.get("sheets", [])
         if sheets and "properties" in sheets[0] and "title" in sheets[0]["properties"]:
-            sheet_title = sheets[0]["properties"]["title"]
-            return sheet_title
+            sheet_title = str(sheets[0]["properties"]["title"]).strip("'\"")
+            if sheet_title:
+                return sheet_title
     except Exception as e:
         print(f"⚠️ [GOOGLE SHEETS] Não foi possível obter título da primeira aba dinamicamente ({e}). Usando fallback '{default}'.")
     return default
@@ -242,7 +258,7 @@ def setup_google_sheet(folder_id, creds):
             sheet_name = get_first_sheet_name(sheets_service, sheet_id)
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
-                range=f"'{sheet_name}'!A1",
+                range=format_sheet_range(sheet_name, "A1"),
                 valueInputOption="RAW",
                 body={'values': [HEADERS]}
             ).execute()
@@ -264,7 +280,7 @@ def setup_google_sheet(folder_id, creds):
             }
             sheets_service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
-                range=f"'{sheet_name}'!A1",
+                range=format_sheet_range(sheet_name, "A1"),
                 valueInputOption="RAW",
                 body=body
             ).execute()
@@ -393,7 +409,7 @@ def add_product_to_sheet(sheet_id, product_data, status, review_needed, review_r
         
         sheets_service.spreadsheets().values().append(
             spreadsheetId=sheet_id,
-            range=f"'{sheet_name}'!A1",
+            range=format_sheet_range(sheet_name, "A1"),
             valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body=body
