@@ -3,5 +3,7 @@ config/credentials.json
 temp_uploads/*
 !temp_uploads/.gitkeep
 __pycache__/
+**/__pycache__/
 *.pyc
 .env
+

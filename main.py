@@ -1004,7 +1004,7 @@ if __name__ == "__main__":
             print(f"📷 Imagem de teste inválida criada em: {test_fail_path}")
         gc.collect()
         
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 10000))
     # Verifica argumentos de terminal
     if len(sys.argv) > 1 and sys.argv[1] == "--server-only":
         run_server(port)
