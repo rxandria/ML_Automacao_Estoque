@@ -113,46 +113,5 @@ class TestCloudRunResilience(unittest.TestCase):
         self.assertEqual(saved_prod["id"], "prod_test_123")
         print("✅ [TEST 4 PASSED] Pipeline de cadastros e triagem executado com sucesso sem duplicação!")
 
-    def test_05_auto_provisioning(self):
-        print("\n🧪 [TEST 5] Testando Auto-Provisionamento de Planilha e Pasta no Drive...")
-        from scripts.drive_sheets_sync import (
-            auto_create_drive_folder,
-            auto_create_spreadsheet,
-            get_or_create_drive_folder_id,
-            get_or_create_spreadsheet_id
-        )
-
-        mock_creds = MagicMock()
-        with patch("scripts.drive_sheets_sync.build") as mock_build:
-            # Mock Drive & Sheets API responses
-            mock_drive_service = MagicMock()
-            mock_sheets_service = MagicMock()
-
-            def build_side_effect(service_name, version, credentials):
-                if service_name == "drive":
-                    return mock_drive_service
-                return mock_sheets_service
-
-            mock_build.side_effect = build_side_effect
-            
-            # Simula criacao de arquivo
-            mock_drive_service.files().create().execute.side_effect = [
-                {"id": "auto_folder_123"},
-                {"id": "auto_sheet_456"}
-            ]
-
-            folder_id = auto_create_drive_folder(mock_creds)
-            self.assertEqual(folder_id, "auto_folder_123")
-
-            sheet_id = auto_create_spreadsheet(mock_creds, folder_id=folder_id)
-            self.assertEqual(sheet_id, "auto_sheet_456")
-
-            # Garanta que get_or_create_spreadsheet_id / get_or_create_drive_folder_id retornem os novos IDs
-            self.assertEqual(get_or_create_drive_folder_id(mock_creds), "auto_folder_123")
-            self.assertEqual(get_or_create_spreadsheet_id(mock_creds), "auto_sheet_456")
-
-        print("✅ [TEST 5 PASSED] Auto-Provisionamento de Planilha e Pasta no Drive validado 100%!")
-
-
 if __name__ == "__main__":
     unittest.main()

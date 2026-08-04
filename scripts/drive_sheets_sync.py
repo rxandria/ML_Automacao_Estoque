@@ -161,152 +161,29 @@ def authenticate(allow_interactive=False):
 
     return creds
 
-# Caches globais de memória para IDs provisionados dinamicamente
-PROVISIONED_SPREADSHEET_ID = None
-PROVISIONED_DRIVE_FOLDER_ID = None
-
-def auto_create_drive_folder(creds):
+def setup_drive_structure(folder_id=None, creds=None):
     """
-    Cria programaticamente uma nova pasta no Google Drive intitulada 'Fotos_Produtos_Auto',
-    define permissões públicas de leitura/escrita e atualiza a memória do sistema.
+    Retorna o DRIVE_FOLDER_ID configurado nas variáveis de ambiente (sanitizado com .strip()).
+    NÃO executa files().create() para evitar erro storageQuotaExceeded na Service Account.
     """
-    global PROVISIONED_DRIVE_FOLDER_ID
-    if not creds:
-        print("❌ [AUTO-PROVISION ERROR] Credenciais nulas ao tentar criar pasta no Drive.")
-        return None
-    try:
-        service = build("drive", "v3", credentials=creds)
-        file_metadata = {
-            'name': 'Fotos_Produtos_Auto',
-            'mimeType': 'application/vnd.google-apps.folder'
-        }
-        file_obj = service.files().create(body=file_metadata, fields='id').execute()
-        folder_id = file_obj.get('id')
-        
-        try:
-            permission = {'type': 'anyone', 'role': 'writer'}
-            service.permissions().create(fileId=folder_id, body=permission).execute()
-        except Exception as perm_err:
-            print(f"⚠️ Aviso ao ajustar permissões da pasta auto-criada: {perm_err}")
-
-        PROVISIONED_DRIVE_FOLDER_ID = folder_id
-        print(f"🟢 [AUTO-PROVISION] Nova Pasta no Drive Criada! ID: {folder_id}")
-        return folder_id
-    except Exception as e:
-        import traceback
-        print(f"❌ [AUTO-PROVISION ERROR] Falha ao criar pasta no Drive: {e}")
-        traceback.print_exc()
-        return None
-
-def auto_create_spreadsheet(creds, folder_id=None):
-    """
-    Cria programaticamente uma nova planilha no Google Sheets intitulada 'Controle_Estoque_MercadoLivre_Auto',
-    preenche os cabeçalhos das colunas em A1, ajusta permissões públicas e atualiza a memória do sistema.
-    """
-    global PROVISIONED_SPREADSHEET_ID
-    if not creds:
-        print("❌ [AUTO-PROVISION ERROR] Credenciais nulas ao tentar criar planilha no Sheets.")
-        return None
-    try:
-        drive_service = build("drive", "v3", credentials=creds)
-        file_metadata = {
-            'name': 'Controle_Estoque_MercadoLivre_Auto',
-            'mimeType': 'application/vnd.google-apps.spreadsheet'
-        }
-        if folder_id:
-            file_metadata['parents'] = [folder_id]
-
-        file_obj = drive_service.files().create(body=file_metadata, fields='id').execute()
-        sheet_id = file_obj.get('id')
-
-        try:
-            permission = {'type': 'anyone', 'role': 'writer'}
-            drive_service.permissions().create(fileId=sheet_id, body=permission).execute()
-        except Exception as perm_err:
-            print(f"⚠️ Aviso ao ajustar permissões da planilha auto-criada: {perm_err}")
-
-        sheets_service = build("sheets", "v4", credentials=creds)
-        body = {'values': [HEADERS]}
-        sheets_service.spreadsheets().values().update(
-            spreadsheetId=sheet_id,
-            range="A1",
-            valueInputOption="RAW",
-            body=body
-        ).execute()
-
-        PROVISIONED_SPREADSHEET_ID = sheet_id
-        print(f"🟢 [AUTO-PROVISION] Nova Planilha Criada com Sucesso! ID: {sheet_id}")
-        return sheet_id
-    except Exception as e:
-        import traceback
-        print(f"❌ [AUTO-PROVISION ERROR] Falha ao criar planilha no Sheets: {e}")
-        traceback.print_exc()
-        return None
-
-def get_or_create_drive_folder_id(creds, force_recreate=False):
-    """
-    Obtém um ID de pasta válido do Google Drive. Se o ID configurado retornar 404 ou não existir,
-    cria dinamicamente uma nova pasta e retorna seu ID.
-    """
-    global PROVISIONED_DRIVE_FOLDER_ID
-    if PROVISIONED_DRIVE_FOLDER_ID and not force_recreate:
-        return PROVISIONED_DRIVE_FOLDER_ID
-
     env_folder_id = get_sanitized_env("DRIVE_FOLDER_ID")
-    candidate_id = env_folder_id or "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
+    if env_folder_id:
+        return env_folder_id
+    if folder_id and isinstance(folder_id, str):
+        folder_id = folder_id.strip()
+        if folder_id:
+            return folder_id
+    return "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
-    if candidate_id and not force_recreate and creds:
-        try:
-            drive_service = build("drive", "v3", credentials=creds)
-            file_info = drive_service.files().get(fileId=candidate_id, fields="id, trashed").execute()
-            if file_info and not file_info.get("trashed", False):
-                PROVISIONED_DRIVE_FOLDER_ID = candidate_id
-                return candidate_id
-        except HttpError as err:
-            if getattr(err, 'resp', None) and err.resp.status in (404, 403):
-                print(f"⚠️ [DRIVE AUTO-PROVISION] Pasta ID '{candidate_id}' inacessível ou não encontrada ({err}). Auto-provisionando nova pasta...")
-            else:
-                print(f"⚠️ [DRIVE AUTO-PROVISION] Inacessível '{candidate_id}' ({err}). Auto-provisionando nova pasta...")
-        except Exception as err:
-            print(f"⚠️ [DRIVE AUTO-PROVISION] Erro ao validar pasta '{candidate_id}': {err}. Auto-provisionando...")
-
-    new_folder_id = auto_create_drive_folder(creds)
-    return new_folder_id or candidate_id
-
-def get_or_create_spreadsheet_id(creds, force_recreate=False):
+def setup_google_sheet(folder_id=None, creds=None):
     """
-    Obtém um ID de planilha válido do Google Sheets. Se o ID configurado retornar 404 ou não existir,
-    cria dinamicamente uma nova planilha e retorna seu ID.
+    Retorna o SPREADSHEET_ID configurado nas variáveis de ambiente (sanitizado com .strip()).
+    NÃO executa files().create() para evitar erro storageQuotaExceeded na Service Account.
     """
-    global PROVISIONED_SPREADSHEET_ID
-    if PROVISIONED_SPREADSHEET_ID and not force_recreate:
-        return PROVISIONED_SPREADSHEET_ID
-
     env_sheet_id = get_sanitized_env("SPREADSHEET_ID")
-    if env_sheet_id and not force_recreate and creds:
-        try:
-            sheets_service = build("sheets", "v4", credentials=creds)
-            meta = sheets_service.spreadsheets().get(spreadsheetId=env_sheet_id).execute()
-            if meta:
-                PROVISIONED_SPREADSHEET_ID = env_sheet_id
-                return env_sheet_id
-        except HttpError as err:
-            if getattr(err, 'resp', None) and err.resp.status in (404, 403):
-                print(f"⚠️ [SHEETS AUTO-PROVISION] SPREADSHEET_ID '{env_sheet_id}' inacessível ou não encontrada ({err}). Auto-provisionando nova planilha...")
-            else:
-                print(f"⚠️ [SHEETS AUTO-PROVISION] Inacessível '{env_sheet_id}' ({err}). Auto-provisionando nova planilha...")
-        except Exception as err:
-            print(f"⚠️ [SHEETS AUTO-PROVISION] Erro ao validar planilha '{env_sheet_id}': {err}. Auto-provisionando...")
-
-    folder_id = get_or_create_drive_folder_id(creds, force_recreate=False)
-    new_sheet_id = auto_create_spreadsheet(creds, folder_id=folder_id)
-    return new_sheet_id or env_sheet_id
-
-def setup_drive_structure(folder_id, creds):
-    """
-    Verifica se a pasta de fotos existe no Drive ou auto-provisiona dinamicamente.
-    """
-    return get_or_create_drive_folder_id(creds)
+    if env_sheet_id:
+        return env_sheet_id
+    return "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
 def format_sheet_range(sheet_name, cell_range):
     """
@@ -420,11 +297,19 @@ def safe_sheets_append(sheets_service, spreadsheet_id, sheet_name, cell_range, v
             print(f"❌ [GOOGLE SHEETS APPEND ERROR] Erro definitivo ao anexar linha ({err_fallback}):")
             raise err_fallback
 
-def setup_google_sheet(folder_id, creds):
+def setup_google_sheet(folder_id=None, creds=None):
     """
-    Obtém uma planilha válida ou auto-provisiona dinamicamente uma nova planilha.
+    Retorna o SPREADSHEET_ID configurado nas variáveis de ambiente (sanitizado com .strip()).
+    NÃO executa files().create() para evitar erro storageQuotaExceeded na Service Account.
     """
-    return get_or_create_spreadsheet_id(creds)
+    env_sheet_id = get_sanitized_env("SPREADSHEET_ID")
+    if env_sheet_id:
+        return env_sheet_id
+    if folder_id and isinstance(folder_id, str):
+        folder_id = folder_id.strip()
+        if folder_id:
+            return folder_id
+    return "1pjqOPcWHW8gCZ9GdLF7ta6NESN0dyw70"
 
 def upload_product_photo(file_input, photos_folder_id, creds):
     """
